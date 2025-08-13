@@ -8,8 +8,8 @@
     "start:backend": "cd backend && python -m uvicorn main:app --reload",
     "start:celery": "cd backend && python -m celery -A celery_worker.celery_app worker --loglevel=info --pool=solo",
     "start:all": "concurrently \"npm:dev\" \"npm:start:backend\" \"npm:start:celery\"",
-    "build": "vite build",
-    "lint": "eslint .",
+    "build": "chmod +x ./node_modules/.bin/vite && vite build",
+    "lint": "eslint . --ext js,jsx --report-unused-disable-directives --max-warnings 0",
     "preview": "vite preview"
   },
   "dependencies": {
