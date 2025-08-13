@@ -5,7 +5,7 @@ import os
 import requests
 import re 
 
-OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY","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")
+OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY","")
 if not OPENROUTER_API_KEY:
     raise ValueError("CRITICAL ERROR: OPENROUTER_API_KEY environment variable is not set.")
 
