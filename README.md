@@ -57,5 +57,5 @@ This architectural shift was a professional necessity and transformed the projec
 ### 🗺️ Future Roadmap
 While the current application is a robust platform, future development could focus on:
 * **Backend-Driven Undo/Redo**: Implementing a professional, file-based versioning system to provide a truly non-destructive workflow.
-* **Real-time Collaboration**: Integrating user authentication and WebSockets to allow multiple users to work on the same dataset concurrently.
+* **Feature-Engineering**: Performing smart feature engineering with Single-Click, completely Based on Context & Columns provided.
 * **Expanded Data Connectors**: Adding support for connecting directly to databases (like PostgreSQL) and data warehouses (like Snowflake).
