@@ -106,6 +106,17 @@ def get_ai_interpretation(profile: dict) -> dict:
             
         return json.loads(json_match.group(0))
 
+    except requests.exceptions.HTTPError as http_err:
+        # This will now give you a very clear error if your API key is wrong.
+        error_message = f"HTTP error occurred: {http_err} - Response: {http_err.response.text}"
+        print(f"ERROR: {error_message}")
+        return {
+            "recommendation": "API Connection Error",
+            "reasoning_summary": "Could not get a valid response from the AI service. This is often caused by an invalid API key, billing issues, or model unavailability.",
+            "assumptions": [],
+            "warning": str(error_message)
+        }
+
     except requests.exceptions.RequestException as e:
         print(f"Error calling AI service: {e}")
         return {

@@ -38,7 +38,7 @@ const UploadPage = () => {
     formData.append("file", selectedFiles[0]);
 
     try {
-      const response = await fetch('http://localhost:8000/upload', {
+      const response = await fetch('/api/upload', {
         method: 'POST',
         body: formData,
       });
@@ -55,6 +55,7 @@ const UploadPage = () => {
       });
 
       toast.success(result.message);
+      addDataset(result);
       navigate('/dashboard');
 
     } catch (error) {
