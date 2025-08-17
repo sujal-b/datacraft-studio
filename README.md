@@ -7,6 +7,7 @@ DataCraft Studio is a full-stack data cleaning and analysis platform designed to
 ### ✨ Core Features
 * **Interactive Data Table**: An enterprise-grade AG Grid interface for viewing, sorting, and filtering large datasets.
 * **Professional Dashboard**: A high-level overview of all available datasets with dynamically calculated data quality scores (missing values, duplicates, inconsistencies).
+* **Automated Data Profiling**: Instantly generates a comprehensive statistics sidebar, providing at-a-glance data quality scores and detailed metrics for every column.
 * **Asynchronous Backend Processing**: All heavy operations (diagnostics, standardization, column deletion) are offloaded to a Python backend, ensuring the UI remains fast and responsive at all times.
 * **AI-Powered Column Diagnosis**: A feature that performs a deep statistical analysis on the backend and uses an LLM (via OpenRouter API) to provide expert, actionable recommendations for data cleaning and imputation.
 * **Robust Data Operations**:
