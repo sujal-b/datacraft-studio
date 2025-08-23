@@ -157,9 +157,21 @@ const DataTablePage = () => {
     }, [currentDataset]);
 
     const handleRunTask = useCallback(async (taskType, column) => {
-        if (!currentDataset) { toast.error("Please select a dataset first."); return; }
-        
-        const modificationTasks = ['standard_scale', 'minmax_scale', 'delete_column'];
+        if (!currentDataset) {
+            toast.error("Please select a dataset first.");
+            return;
+        }
+
+        const modificationTasks = ['delete_column', 'impute_mean', 'impute_median', 'impute_mode', 'impute_constant'];
+        let taskParams = {};
+
+        if (taskType === 'impute_constant') {
+            const customValue = window.prompt("Enter the value to fill missing cells with:", "");
+            if (customValue === null) { // User clicked "Cancel"
+                return;
+            }
+            taskParams.value = customValue;
+        }
 
         if (taskType === 'diagnosis') {
             if (insightsPollingRef.current) clearInterval(insightsPollingRef.current);
@@ -170,6 +182,7 @@ const DataTablePage = () => {
             setStatsSidebarState('closed');
         }
 
+        const toastId = toast.loading(`Submitting task '${taskType}'...`);
         try {
             const response = await fetch('/api/submit_task', {
                 method: 'POST',
@@ -177,18 +190,20 @@ const DataTablePage = () => {
                 body: JSON.stringify({
                     dataset_name: currentDataset.name,
                     column_name: column.getColId(),
-                    task_type: taskType
+                    task_type: taskType,
+                    task_params: taskParams
                 }),
             });
             if (!response.ok) throw new Error('Failed to submit job.');
+            
             const { job_id } = await response.json();
-            toast.info(`Job '${taskType}' submitted for '${column.getColDef().headerName}'.`);
+            toast.update(toastId, { render: `Job '${taskType}' submitted.`, type: 'info', isLoading: false, autoClose: 3000 });
 
             if (modificationTasks.includes(taskType)) {
                 setTimeout(() => {
-                    toast.success(`'${taskType}' completed. Refreshing data...`);
+                    toast.success("Action complete! Refreshing data...");
                     loadData();
-                }, 3000);
+                }, 2000); 
                 return;
             }
 
@@ -201,11 +216,13 @@ const DataTablePage = () => {
                     setAiAnalysis(data);
                     if (data.status !== 'SUCCESS') {
                         toast.error(`Task failed: ${data.error || "An unknown error occurred."}`);
+                    } else {
+                        toast.success("AI Analysis complete!");
                     }
                 }
             }, 3000);
         } catch (error) {
-            toast.error(error.message);
+            toast.update(toastId, { render: error.message, type: 'error', isLoading: false, autoClose: 5000 });
             if (taskType === 'diagnosis') {
                 setAiAnalysis({ status: "FAILURE", error: error.message });
                 setIsInsightsLoading(false);

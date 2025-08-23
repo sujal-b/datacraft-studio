@@ -189,28 +189,6 @@ def perform_delete_column(df: pd.DataFrame, column_name: str, file_path: str):
     df.to_csv(file_path, index=False)
     return {"message": f"Successfully deleted column '{column_name}' and updated the dataset."}
 
-
-@celery_app.task
-def route_task(dataset_name: str, column_name: str, task_type: str, task_params: dict = None):
-    try:
-        file_path = os.path.join(os.path.dirname(__file__), '..', 'public', dataset_name)
-        df = pd.read_csv(file_path)
-        if task_type == 'diagnosis':
-            profile = get_statistical_profile(df, column_name)
-            result = get_ai_interpretation(profile)
-            return {"status": "SUCCESS", "result": result}
-        elif task_type == 'delete_column':
-            result = perform_delete_column(df, column_name, file_path)
-            return {"status": "SUCCESS", "result": result}
-        elif task_type in ['standard_scale', 'minmax_scale']:
-            method = 'standard' if task_type == 'standard_scale' else 'minmax'
-            result = perform_standardization(df, column_name, method, file_path)
-            return {"status": "SUCCESS", "result": result}
-        else:
-            return {"status": "ERROR", "message": "Unknown task type."}
-    except Exception as e:
-        return {"status": "FAILURE", "error": str(e)}
-    
 @celery_app.task
 def perform_dataset_cleaning_task(file_path: str, action_type: str):
     """
@@ -244,4 +222,65 @@ def perform_dataset_cleaning_task(file_path: str, action_type: str):
 
     except Exception as e:
         print(f"CRITICAL ERROR in perform_dataset_cleaning_task for {file_path}: {e}")
+        return {"status": "FAILURE", "error": str(e)}
+    
+def perform_imputation(df: pd.DataFrame, column_name: str, method: str, value=None) -> dict:
+    """
+    Performs data imputation on a specific column and returns a summary of the action.
+    """
+    if column_name not in df.columns:
+        raise ValueError(f"Column '{column_name}' not found.")
+
+    original_missing_count = int(df[column_name].isnull().sum())
+    if original_missing_count == 0:
+        return {"message": "No missing values to impute.", "rows_affected": 0}
+
+    if method == 'mean':
+        fill_value = df[column_name].mean()
+        df[column_name].fillna(fill_value, inplace=True)
+    elif method == 'median':
+        fill_value = df[column_name].median()
+        df[column_name].fillna(fill_value, inplace=True)
+    elif method == 'mode':
+        fill_value = df[column_name].mode()[0]
+        df[column_name].fillna(fill_value, inplace=True)
+    elif method == 'constant':
+        # Coerce the provided value to the column's dtype if possible
+        dtype = df[column_name].dtype
+        try:
+            fill_value = pd.Series([value]).astype(dtype).iloc[0]
+        except (ValueError, TypeError):
+            fill_value = value # Fallback to the raw value
+        df[column_name].fillna(fill_value, inplace=True)
+    else:
+        raise ValueError(f"Invalid imputation method: {method}")
+
+    return {"message": f"Successfully imputed {original_missing_count} missing values in '{column_name}'.", "rows_affected": original_missing_count}
+
+
+@celery_app.task
+def route_task(dataset_name: str, column_name: str, task_type: str, task_params: dict = None):
+    try:
+        file_path = os.path.join(os.path.dirname(__file__), '..', 'public', dataset_name)
+        df = pd.read_csv(file_path)
+        if task_type == 'diagnosis':
+            profile = get_statistical_profile(df, column_name)
+            result = get_ai_interpretation(profile)
+            return {"status": "SUCCESS", "result": result}
+        elif task_type == 'delete_column':
+            result = perform_delete_column(df, column_name, file_path)
+            return {"status": "SUCCESS", "result": result}
+        elif task_type.startswith('impute_'):
+            method = task_type.split('_')[1]
+            custom_value = task_params.get('value') if task_params else None
+            result = perform_imputation(df, column_name, method, value=custom_value)
+            df.to_csv(file_path, index=False)
+            return {"status": "SUCCESS", "result": result}
+        elif task_type in ['standard_scale', 'minmax_scale']:
+            method = 'standard' if task_type == 'standard_scale' else 'minmax'
+            result = perform_standardization(df, column_name, method, file_path)
+            return {"status": "SUCCESS", "result": result}
+        else:
+            return {"status": "ERROR", "message": "Unknown task type."}
+    except Exception as e:
         return {"status": "FAILURE", "error": str(e)}

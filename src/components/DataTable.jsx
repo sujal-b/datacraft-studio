@@ -41,14 +41,36 @@ const DataTable = ({ rowData, columnDefs, theme, onRunTask, onRefresh }) => {
   
     const getContextMenuItems = useCallback((params) => {
         const columnType = params.column.getColDef().headerComponentParams?.description;
-        const isNumeric = ['integer', 'float', 'identifier'].includes(columnType);
-        
+        const isNumeric = ['integer', 'float'].includes(columnType);
+        const isCategorical = ['categorical', 'identifier', 'integer'].includes(columnType);
+
         let menuItems = [
-            { name: 'Full Column Diagnosis', action: () => onRunTask('diagnosis', params.column), icon: '<span class="ag-icon ag-icon-execute"></span>' },
+            { name: 'Co-pilot Insights', action: () => onRunTask('diagnosis', params.column), icon: '<span class="ag-icon ag-icon-execute"></span>' },
             'separator',
-            { name: 'Delete Column', action: () => { if (confirm(`Delete '${params.column.getColDef().headerName}'?`)) { onRunTask('delete_column', params.column); } }, icon: '<span class="ag-icon ag-icon-delete"></span>' }
         ];
 
+        const imputationItems = [];
+        if (isNumeric) {
+            imputationItems.push({ name: 'Fill with Mean', action: () => onRunTask('impute_mean', params.column) });
+            imputationItems.push({ name: 'Fill with Median', action: () => onRunTask('impute_median', params.column) });
+        }
+        if (isCategorical) {
+            imputationItems.push({ name: 'Fill with Mode', action: () => onRunTask('impute_mode', params.column) });
+        }
+        imputationItems.push({ name: 'Fill with Custom Value', action: () => onRunTask('impute_constant', params.column) });
+        
+        if (imputationItems.length > 0) {
+            menuItems.push({
+                name: 'Impute Missing Values',
+                subMenu: imputationItems
+            });
+            menuItems.push('separator');
+        }
+
+        menuItems.push(
+            { name: 'Delete Column', action: () => { if (confirm(`Delete '${params.column.getColDef().headerName}'?`)) { onRunTask('delete_column', params.column); } }, icon: '<span class="ag-icon ag-icon-delete"></span>' }
+        );
+        
         if (isNumeric) {
             menuItems.push(
                 'separator',
@@ -56,7 +78,7 @@ const DataTable = ({ rowData, columnDefs, theme, onRunTask, onRefresh }) => {
                 { name: 'Normalize (0-1 Range)', action: () => onRunTask('minmax_scale', params.column) }
             );
         }
-    
+
         menuItems.push('separator', 'copy', 'paste', 'export');
         return menuItems;
     }, [onRunTask, onRefresh]);
