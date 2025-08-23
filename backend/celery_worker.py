@@ -210,3 +210,38 @@ def route_task(dataset_name: str, column_name: str, task_type: str, task_params:
             return {"status": "ERROR", "message": "Unknown task type."}
     except Exception as e:
         return {"status": "FAILURE", "error": str(e)}
+    
+@celery_app.task
+def perform_dataset_cleaning_task(file_path: str, action_type: str):
+    """
+    Performs a dataset-wide cleaning action based on the specified action_type.
+    This task modifies the dataset file in place.
+    """
+    try:
+        if not os.path.exists(file_path):
+            return {"status": "FAILURE", "error": "File not found."}
+
+        df = pd.read_csv(file_path, on_bad_lines='skip')
+        original_rows = len(df)
+
+        if action_type == 'drop_na_rows':
+            df.dropna(inplace=True)
+            rows_affected = original_rows - len(df)
+            message = f"Successfully dropped {rows_affected} rows with missing values."
+        
+        elif action_type == 'drop_duplicate_rows':
+            df.drop_duplicates(inplace=True)
+            rows_affected = original_rows - len(df)
+            message = f"Successfully dropped {rows_affected} duplicate rows."
+            
+        else:
+            return {"status": "FAILURE", "error": f"Unknown cleaning action: {action_type}"}
+
+        # Overwrite the original file with the cleaned data
+        df.to_csv(file_path, index=False)
+
+        return {"status": "SUCCESS", "message": message, "rows_affected": rows_affected}
+
+    except Exception as e:
+        print(f"CRITICAL ERROR in perform_dataset_cleaning_task for {file_path}: {e}")
+        return {"status": "FAILURE", "error": str(e)}

@@ -4,7 +4,7 @@ import Papa from 'papaparse';
 import { useDatasets } from '../context/DatasetContext';
 import { toast } from 'react-toastify';
 import { FaFileCsv, FaChartBar } from "react-icons/fa";
-import { FiChevronDown, FiUpload } from "react-icons/fi";
+import { FiChevronDown, FiUpload, FiTool } from "react-icons/fi";
 import InsightsSidebar from '../components/InsightsSidebar';
 import StatisticsSidebar from '../components/StatisticsSidebar';
 import '../styles/DataTablePage.css';
@@ -17,6 +17,48 @@ const ThemeSelector = ({ theme, setTheme }) => (
         <option value="ag-theme-material">Material</option>
     </select>
 );
+
+const QuickActions = ({ onAction }) => {
+    const [isOpen, setIsOpen] = useState(false);
+    const ref = useRef(null);
+
+    useEffect(() => {
+        const handleClickOutside = (event) => {
+            if (ref.current && !ref.current.contains(event.target)) {
+                setIsOpen(false);
+            }
+        };
+        document.addEventListener('mousedown', handleClickOutside);
+        return () => document.removeEventListener('mousedown', handleClickOutside);
+    }, [ref]);
+
+    const handleSelect = (action) => {
+        onAction(action);
+        setIsOpen(false);
+    };
+
+    return (
+        <div className="quick-actions-menu" ref={ref}>
+            <button className="quick-actions-button" onClick={() => setIsOpen(o => !o)}>
+                <FiTool size={16} />
+                Quick Actions
+                <FiChevronDown size={16} style={{ transform: isOpen ? 'rotate(180deg)' : 'none', transition: 'transform 0.2s' }}/>
+            </button>
+            {isOpen && (
+                <div className="quick-actions-dropdown">
+                    <button onClick={() => handleSelect('drop_na_rows')}>
+                        <strong>Drop Rows with Missing Values</strong>
+                        <span>Deletes any row with at least one empty cell.</span>
+                    </button>
+                    <button onClick={() => handleSelect('drop_duplicate_rows')}>
+                        <strong>Drop Duplicate Rows</strong>
+                        <span>Deletes all rows that are exact duplicates.</span>
+                    </button>
+                </div>
+            )}
+        </div>
+    );
+};
 
 const DataTablePage = () => {
     const { datasets, currentDataset, setCurrentDataset } = useDatasets();
@@ -171,6 +213,46 @@ const DataTablePage = () => {
         }
     }, [currentDataset, loadData]);
 
+    const handleQuickAction = async (actionType) => {
+        if (!currentDataset) {
+            toast.warn("Please select a dataset first.");
+            return;
+        }
+
+        const actionName = actionType === 'drop_na_rows' ? 'drop all rows with missing values' : 'drop all duplicate rows';
+        if (!window.confirm(`This will permanently modify the '${currentDataset.name}' file by attempting to ${actionName}. Are you sure you want to continue?`)) {
+            return;
+        }
+
+        const toastId = toast.loading(`Performing '${actionName}'...`);
+        try {
+            const response = await fetch('/api/dataset/clean', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    dataset_name: currentDataset.name,
+                    action_type: actionType,
+                }),
+            });
+
+            if (!response.ok) {
+                const errData = await response.json();
+                throw new Error(errData.detail || "Failed to start cleaning job.");
+            }
+
+            const result = await response.json();
+            
+            setTimeout(() => {
+                loadData(); 
+                fetchDatasetStatistics();
+                toast.update(toastId, { render: "Cleaning successful! Table has been refreshed.", type: "success", isLoading: false, autoClose: 5000 });
+            }, 2000);
+
+        } catch (error) {
+            toast.update(toastId, { render: error.message, type: "error", isLoading: false, autoClose: 5000 });
+        }
+    };
+
     useEffect(() => {
         if (currentDataset) {
             loadData();
@@ -224,6 +306,7 @@ const DataTablePage = () => {
                         </div>
                     </div>
                     <div className="header-actions">
+                        <QuickActions onAction={handleQuickAction} />
                         <button className={`statistics-button ${statsSidebarState === 'open' ? 'active' : ''}`} onClick={toggleStatsSidebar}>
                             <FaChartBar /> Statistics
                         </button>

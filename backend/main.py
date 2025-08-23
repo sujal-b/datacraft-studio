@@ -29,6 +29,10 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+class CleanRequest(BaseModel):
+    dataset_name: str
+    action_type: str
+
 public_dir = os.path.join(os.path.dirname(__file__), '..', 'public')
 class TaskRequest(BaseModel):
     dataset_name: str
@@ -129,5 +133,21 @@ async def get_statistics_status(job_id: str):
             return {"status": "FAILURE", "error": str(task_result.info)}
     else:
         return {"status": "PENDING"}
+    
+@app.post("/api/dataset/clean")
+async def clean_dataset(request: CleanRequest):
+    try:
+        file_path = os.path.join(public_dir, request.dataset_name)
+        if not os.path.exists(file_path):
+            raise HTTPException(status_code=404, detail="Dataset not found.")
+
+        task = worker.send_task(
+            'celery_worker.perform_dataset_cleaning_task',
+            args=[file_path, request.action_type]
+        )
+        
+        return {"job_id": task.id, "message": f"Dataset cleaning job '{request.action_type}' started."}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 app.mount("/", StaticFiles(directory=public_dir, html=True), name="public")
