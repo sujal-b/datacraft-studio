@@ -15,7 +15,7 @@ const DashboardPage = () => {
   useEffect(() => {
     const fetchSummary = async () => {
       try {
-        const response = await fetch('http://localhost:8000/datasets/dashboard-summary');
+        const response = await fetch('/api/datasets/dashboard-summary');
         if (!response.ok) throw new Error("Could not fetch dashboard data.");
         const data = await response.json();
         setDatasetsSummary(data);
