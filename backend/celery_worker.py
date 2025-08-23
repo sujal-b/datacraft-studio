@@ -1,4 +1,3 @@
-# backend/celery_worker.py
 from celery import Celery
 import pandas as pd
 import numpy as np

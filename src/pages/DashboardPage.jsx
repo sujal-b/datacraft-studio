@@ -1,10 +1,9 @@
-// src/pages/DashboardPage.jsx
 import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useDatasets } from '../context/DatasetContext';
 import { toast } from 'react-toastify';
 import { Upload, Database, AlertTriangle, TrendingUp, Activity, Calendar } from 'lucide-react';
-import '../styles/Dashboard.css'; // We will create this next
+import '../styles/Dashboard.css';
 
 const DashboardPage = () => {
   const [datasetsSummary, setDatasetsSummary] = useState([]);
@@ -26,19 +25,18 @@ const DashboardPage = () => {
       }
     };
     fetchSummary();
-  }, [datasets]); // Refetch when the list of datasets changes (e.g., after an upload)
+  }, [datasets]); 
 
   const handleCardClick = (datasetSummary) => {
     const datasetToSelect = datasets.find(d => d.name === datasetSummary.filename);
     if (datasetToSelect) {
-      setCurrentDataset(datasetToSelect); // You'll need to add this to your context
+      setCurrentDataset(datasetToSelect);
       navigate('/data-table');
     } else {
       toast.error("Could not find the selected dataset.");
     }
   };
 
-  // Aggregate metrics for the header
   const activeDatasets = datasetsSummary.length;
   const qualityAlerts = datasetsSummary.filter(d => d.qualityScore < 70).length;
   const avgQuality = activeDatasets > 0 ? Math.round(datasetsSummary.reduce((sum, d) => sum + d.qualityScore, 0) / activeDatasets) : 0;
@@ -54,7 +52,7 @@ const DashboardPage = () => {
     if (status === "CLEANED") return 'status-cleaned';
     if (status === "CLEANING") return 'status-cleaning';
     if (status === "RAW") return 'status-raw';
-    return ''; // Default class
+    return '';
   };
   
   const getQualityColorClass = (score) => {
@@ -64,7 +62,7 @@ const DashboardPage = () => {
   };
 
   if (isLoading) {
-    return <div>Loading Dashboard...</div>; // Add a proper loader here
+    return <div>Loading Dashboard...</div>;
   }
 
   return (
@@ -111,7 +109,6 @@ const DashboardPage = () => {
 
       <main className="dashboard-grid">
         {datasetsSummary.map((dataset) => {
-          // 1. Determine the color class for this specific card
           const qualityClass = getQualityColorClass(dataset.qualityScore);
           return (
             <div key={dataset.id} className="dataset-card" onClick={() => handleCardClick(dataset)}>

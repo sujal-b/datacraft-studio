@@ -1,4 +1,3 @@
-// src/components/StatisticsSidebar.jsx
 import React, { useState } from 'react';
 import '../styles/StatisticsSidebar.premium.css'; 
 import { FiChevronRight, FiChevronLeft, FiDatabase, FiTrendingUp, FiShield, FiBarChart2 } from 'react-icons/fi';

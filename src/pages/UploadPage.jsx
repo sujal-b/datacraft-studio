@@ -13,9 +13,7 @@ const UploadPage = () => {
   const navigate = useNavigate();
   const [isUploading, setIsUploading] = useState(false);
 
-  // This function is called when files are dropped or selected.
   const onDrop = useCallback(acceptedFiles => {
-    // We'll handle one file at a time for a cleaner workflow.
     if (acceptedFiles.length > 0) {
         setSelectedFiles([acceptedFiles[0]]);
     }
@@ -23,13 +21,12 @@ const UploadPage = () => {
 
   const { getRootProps, getInputProps, isDragActive } = useDropzone({
     onDrop,
-    multiple: false, // Ensure only one file can be selected at a time
+    multiple: false,
     accept: {
       'text/csv': ['.csv'],
     }
   });
 
-  // This is the core function that handles the upload to the backend.
   const handleProcessAndUpload = async () => {
     if (selectedFiles.length === 0) return;
     setIsUploading(true);
@@ -47,11 +44,10 @@ const UploadPage = () => {
       
       const result = await response.json();
       
-      // THE FIX: Use the new name and path returned by the server.
       addDataset({
-        name: result.name, // Use the versioned name from the server
+        name: result.name,
         source: 'uploaded',
-        path: result.path,   // Use the versioned path from the server
+        path: result.path,
       });
 
       toast.success(result.message);
@@ -66,7 +62,6 @@ const UploadPage = () => {
   };
 
   return (
-    // By wrapping the content, we can apply staggered animations.
     <div className="upload-page-container animated-component">
       <div className="upload-page-header" style={{ animationDelay: '0.1s' }}>
         <h1>Upload Data Files</h1>

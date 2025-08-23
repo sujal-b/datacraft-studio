@@ -22,7 +22,6 @@ def detect_data_type(series: pd.Series) -> str:
         return 'empty'
 
     sample = series_cleaned.head(1000)
-
     numeric_sample = pd.to_numeric(sample, errors='coerce')
     if numeric_sample.notna().sum() / len(sample) > 0.90:
         try:

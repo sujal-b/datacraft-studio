@@ -92,7 +92,6 @@ def get_ai_interpretation(profile: dict) -> dict:
             timeout=45
         )
         response.raise_for_status()
-        
         response_data = response.json()
         ai_content_string = response_data['choices'][0]['message']['content']
         

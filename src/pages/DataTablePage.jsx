@@ -258,5 +258,4 @@ const DataTablePage = () => {
         </div>
     );
 };
-
 export default DataTablePage;

@@ -1,4 +1,3 @@
-// src/components/DataTable.jsx
 import React, { useRef, useMemo, useCallback } from 'react';
 import { AgGridReact } from 'ag-grid-react';
 import 'ag-grid-community/styles/ag-grid.css';

@@ -14,6 +14,7 @@
     transform: translateX(100%);
     box-shadow: -10px 0 25px -15px rgba(0,0,0,0.1);
 }
+
 .statistics-sidebar.open { transform: translateX(0); }
 .statistics-sidebar .sidebar-header { padding: 1.25rem; border-bottom: 1px solid #E2E8F0; font-size: 1.1rem; font-weight: 600; color: #1E293B; }
 .stats-tabs { display: flex; padding: 0 1.5rem; border-bottom: 1px solid #E2E8F0; }
