@@ -33,40 +33,35 @@ const CustomHeader = props => {
 
 const DataTable = ({ rowData, columnDefs, theme, onRunTask, onRefresh }) => {
     const gridRef = useRef(null);
+
     const onSearch = (event) => {
         if (gridRef.current && gridRef.current.api) {
             gridRef.current.api.setQuickFilter(event.target.value);
         }
     };
+  
     const getContextMenuItems = useCallback((params) => {
-        const isNumeric = ['integer', 'float', 'identifier'].includes(params.column.getColDef().headerComponentParams?.description);
+        const columnType = params.column.getColDef().headerComponentParams?.description;
+        const isNumeric = ['integer', 'float', 'identifier'].includes(columnType);
+        
         let menuItems = [
-            {
-                name: 'Run Full Column Diagnosis',
-                action: () => onRunTask('diagnosis', params.column),
-                icon: '<span class="ag-icon ag-icon-execute"></span>',
-            },
+            { name: 'Full Column Diagnosis', action: () => onRunTask('diagnosis', params.column), icon: '<span class="ag-icon ag-icon-execute"></span>' },
             'separator',
-            {
-                name: 'Delete Column',
-                action: () => {
-                    if (confirm(`Are you sure you want to permanently delete '${params.column.getColDef().headerName}'?`)) {
-                        onRunTask('delete_column', params.column);
-                    }
-                },
-                icon: '<span class="ag-icon ag-icon-delete"></span>',
-            }
+            { name: 'Delete Column', action: () => { if (confirm(`Delete '${params.column.getColDef().headerName}'?`)) { onRunTask('delete_column', params.column); } }, icon: '<span class="ag-icon ag-icon-delete"></span>' }
         ];
+
         if (isNumeric) {
             menuItems.push(
                 'separator',
-                { name: 'Standardize (Z-Score)', action: () => onRunTask('standard_scale', params.column), icon: '...' },
-                { name: 'Normalize (0-1 Range)', action: () => onRunTask('minmax_scale', params.column), icon: '...' },
+                { name: 'Standardize (Z-Score)', action: () => onRunTask('standard_scale', params.column) },
+                { name: 'Normalize (0-1 Range)', action: () => onRunTask('minmax_scale', params.column) }
             );
         }
+    
         menuItems.push('separator', 'copy', 'paste', 'export');
         return menuItems;
     }, [onRunTask, onRefresh]);
+
     const defaultColDef = useMemo(() => ({
         resizable: true,
         headerComponent: CustomHeader,
@@ -99,9 +94,14 @@ const DataTable = ({ rowData, columnDefs, theme, onRunTask, onRefresh }) => {
                     paginationPageSizeSelector={[50,100,150,200]}
                     sideBar={true}
                     getContextMenuItems={getContextMenuItems}
+                    
+                    rowDragManaged={true}
+                    rowSelection={'multiple'}
+                    suppressRowClickSelection={true}
                 />
             </div>
         </div>
     );
 };
+
 export default DataTable;

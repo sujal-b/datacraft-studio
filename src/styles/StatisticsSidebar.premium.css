@@ -1,9 +1,5 @@
-/*
- * Premium Light Theme for Statistics Sidebar
- * Adapted from dark theme reference to match the existing page UI.
- */
 .statistics-sidebar {
-    width: 320px;
+    width: 365px;
     background-color: #FFFFFF;
     color: #334155;
     border-left: 1px solid #E2E8F0;

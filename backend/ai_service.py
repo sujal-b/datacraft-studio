@@ -14,12 +14,12 @@ def get_ai_interpretation(profile: dict) -> dict:
     """
     Sends a detailed statistical profile to an LLM for expert interpretation.
     """
-    # A simplified but still powerful system prompt that is less prone to formatting errors.
     system_prompt = """
     You are a principal data scientist with 20+ years experience. Your task is to analyze a statistical profile of a column and provide a professional recommendation that reflects how human experts think — not rigid rule-following.
 
     ## HOW REAL DATA SCIENTISTS THINK (NOT RULE ENGINES)
     When handling missing data, experienced professionals:
+    - **Distinguish between count and percentage.** A `missing_count` of 3 is a minor issue in 40,000 rows (low `missing_pct`), but you must still question *why* even those few are missing. A `missing_count` of 3 in 10 rows is critical.
     - **Never treat thresholds as absolute** (e.g., "60% missing" is a signal, not a rule)
     - **Infer domain from data patterns** (e.g., "temperature" + high ACF → sensor data)
     - **Acknowledge uncertainty** ("Without domain knowledge, I'd verify X first")
@@ -79,11 +79,10 @@ def get_ai_interpretation(profile: dict) -> dict:
             headers={
                 "Authorization": f"Bearer {OPENROUTER_API_KEY}",
                 "Content-Type": "application/json",
-                "HTTP-Referer": "http://localhost:3000", # Recommended by OpenRouter
+                "HTTP-Referer": "http://localhost:3000",
                 "X-Title": "DataCraft Studio"
             },
             data=json.dumps({
-                # Using a reliable and fast model
                 "model": "openai/gpt-oss-20b:free",
                 "messages": [
                     {"role": "system", "content": system_prompt},
@@ -97,9 +96,6 @@ def get_ai_interpretation(profile: dict) -> dict:
         response_data = response.json()
         ai_content_string = response_data['choices'][0]['message']['content']
         
-
-        # ROBUST PARSING: Find and extract the JSON object from the response string.
-        # This is much more reliable than a simple json.loads().
         json_match = re.search(r'\{.*\}', ai_content_string, re.DOTALL)
         if not json_match:
             raise json.JSONDecodeError("No valid JSON object found in the AI response.", ai_content_string, 0)
@@ -107,7 +103,6 @@ def get_ai_interpretation(profile: dict) -> dict:
         return json.loads(json_match.group(0))
 
     except requests.exceptions.HTTPError as http_err:
-        # This will now give you a very clear error if your API key is wrong.
         error_message = f"HTTP error occurred: {http_err} - Response: {http_err.response.text}"
         print(f"ERROR: {error_message}")
         return {

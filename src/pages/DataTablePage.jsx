@@ -1,4 +1,3 @@
-// src/pages/DataTablePage.jsx
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import DataTable from '../components/DataTable';
 import Papa from 'papaparse';
@@ -26,10 +25,10 @@ const DataTablePage = () => {
     const [theme, setTheme] = useState('ag-theme-alpine');
     const [error, setError] = useState('');
 
-    // --- Create two separate, independent refs for polling ---
     const statsPollingRef = useRef(null);
     const insightsPollingRef = useRef(null);
 
+    const [datasetSummary, setDatasetSummary] = useState(null);
     const [statsSidebarState, setStatsSidebarState] = useState('closed');
     const [datasetStatistics, setDatasetStatistics] = useState(null);
     const [isStatsLoading, setIsStatsLoading] = useState(false);
@@ -41,21 +40,39 @@ const DataTablePage = () => {
     const loadData = useCallback(async () => {
         if (!currentDataset) return;
         try {
+            const summaryResponse = await fetch('/api/datasets/dashboard-summary');
+            if (!summaryResponse.ok) throw new Error("Could not fetch dataset summaries.");
+            const summaries = await summaryResponse.json();
+            const currentSummary = summaries.find(s => s.filename === currentDataset.name);
+            setDatasetSummary(currentSummary);
+
             const urlToFetch = `${currentDataset.path}?t=${Date.now()}`;
             const response = await fetch(urlToFetch);
             if (!response.ok) throw new Error('Failed to fetch dataset');
             const csvText = await response.text();
+            
             Papa.parse(csvText, {
-                header: true, dynamicTyping: true, skipEmptyLines: true,
+                header: true,
+                dynamicTyping: true,
+                skipEmptyLines: true,
                 complete: (result) => {
                     if (result.data && result.data.length > 0) {
                         const data = result.data;
                         const headers = Object.keys(data[0]);
+        
                         const newColumnDefs = headers.map(header => ({
                             headerName: header.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase()),
                             field: header,
-                            sortable: true, filter: true, editable: true, enableRowGroup: true,
+                            headerComponentParams: {
+                                description: currentSummary?.column_types?.[header] || 'text'
+                            },
+                            sortable: true,
+                            filter: true,
+                            editable: true,
+                            enableRowGroup: true,
+                            ...(headers.indexOf(header) === 0 && { checkboxSelection: true, headerCheckboxSelection: true }),
                         }));
+
                         setColumnDefs(newColumnDefs);
                         setRowData(data);
                         setError('');
@@ -66,7 +83,7 @@ const DataTablePage = () => {
                 },
                 error: () => { setError('Failed to parse CSV file.'); }
             });
-        } catch (e) { setError('Could not load or process file.'); }
+        } catch (e) { setError(e.message || 'Could not load or process the file.'); }
     }, [currentDataset]);
 
     const fetchDatasetStatistics = useCallback(async () => {
@@ -99,10 +116,11 @@ const DataTablePage = () => {
 
     const handleRunTask = useCallback(async (taskType, column) => {
         if (!currentDataset) { toast.error("Please select a dataset first."); return; }
-        // FIX: Use the correct, dedicated ref for insights polling
-        if (insightsPollingRef.current) clearInterval(insightsPollingRef.current);
+        
+        const modificationTasks = ['standard_scale', 'minmax_scale', 'delete_column'];
 
         if (taskType === 'diagnosis') {
+            if (insightsPollingRef.current) clearInterval(insightsPollingRef.current);
             setSidebarColumn(column);
             setAiAnalysis(null);
             setIsInsightsLoading(true);
@@ -122,7 +140,15 @@ const DataTablePage = () => {
             });
             if (!response.ok) throw new Error('Failed to submit job.');
             const { job_id } = await response.json();
-            toast.info(`Job submitted for '${column.getColDef().headerName}'.`);
+            toast.info(`Job '${taskType}' submitted for '${column.getColDef().headerName}'.`);
+
+            if (modificationTasks.includes(taskType)) {
+                setTimeout(() => {
+                    toast.success(`'${taskType}' completed. Refreshing data...`);
+                    loadData();
+                }, 3000);
+                return;
+            }
 
             insightsPollingRef.current = setInterval(async () => {
                 const statusResponse = await fetch(`/api/analyze/status/${job_id}`);

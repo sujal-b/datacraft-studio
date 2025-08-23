@@ -23,9 +23,15 @@ def generate_dataset_summary(file_path: str):
                             '1.#IND', '1.#QNAN', '<NA>', 'N/A', 'NA', 'NULL', 'NaN', 'n/a',
                             'nan', 'null', 'None']
         df = pd.read_csv(file_path, on_bad_lines='skip', na_values=common_na_values)
+        
         if df.empty:
             redis_cache.hdel("dashboard_summaries", file_name)
             return
+
+        column_types = {}
+        for column in df.columns:
+            column_types[column] = detect_data_type(df[column])
+
         rows, columns = df.shape
         missing_cells = df.isnull().sum().sum()
         total_cells = rows * columns if rows > 0 and columns > 0 else 1
@@ -39,16 +45,19 @@ def generate_dataset_summary(file_path: str):
             inconsistent_rows = whitespace_issues.sum()
         inconsistency_pct = (inconsistent_rows / rows) * 100 if rows > 0 else 0
         quality_score = max(0, 100 - missing_pct - duplicate_pct - inconsistency_pct)
+        
         status = "RAW"
         if quality_score > 90: status = "CLEANED"
         elif quality_score > 60: status = "CLEANING"
+        
         summary = {
             "id": file_name, "filename": file_name,
             "size": f"{os.path.getsize(file_path) / (1024*1024):.1f}MB",
             "rows": rows, "columns": columns, "status": status,
             "qualityScore": round(quality_score), "missing": round(missing_pct),
             "duplicates": round(duplicate_pct), "inconsistencies": round(inconsistency_pct),
-            "lastModified": datetime.fromtimestamp(os.path.getmtime(file_path)).strftime('%Y-%m-%d')
+            "lastModified": datetime.fromtimestamp(os.path.getmtime(file_path)).strftime('%Y-%m-%d'),
+            "column_types": column_types
         }
         redis_cache.hset("dashboard_summaries", file_name, json.dumps(summary))
     except Exception as e:
@@ -133,13 +142,19 @@ def get_mnar_indicators(df: pd.DataFrame, col: str) -> dict:
 
 def get_statistical_profile(df: pd.DataFrame, column_name: str) -> dict:
     detected_type = detect_data_type(df[column_name])
+
+    missing_count = int(df[column_name].isnull().sum())
+    total_count = len(df[column_name])
+    missing_pct = (missing_count / total_count) * 100 if total_count > 0 else 0
+
     profile = {
         "column": column_name,
-        "missing_pct": round(df[column_name].isnull().mean() * 100, 1),
+        "missing_count": missing_count, 
+        "missing_pct": round(missing_pct, 4),
         "data_type": detected_type,
         "unique_values": df[column_name].nunique()
     }
-    if detected_type == "numeric":
+    if detected_type in ['integer', 'float', 'identifier']:
         clean_data = df[column_name].dropna()
         if not clean_data.empty:
             profile["mean"] = round(clean_data.mean(), 2)
@@ -174,6 +189,7 @@ def perform_delete_column(df: pd.DataFrame, column_name: str, file_path: str):
     df.drop(columns=[column_name], inplace=True)
     df.to_csv(file_path, index=False)
     return {"message": f"Successfully deleted column '{column_name}' and updated the dataset."}
+
 
 @celery_app.task
 def route_task(dataset_name: str, column_name: str, task_type: str, task_params: dict = None):
