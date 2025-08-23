@@ -30,7 +30,6 @@ app.add_middleware(
 )
 
 public_dir = os.path.join(os.path.dirname(__file__), '..', 'public')
-
 class TaskRequest(BaseModel):
     dataset_name: str
     column_name: str
