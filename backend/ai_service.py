@@ -1,5 +1,3 @@
-# backend/ai_service.py
-
 import json
 import os
 import requests
@@ -83,7 +81,7 @@ def get_ai_interpretation(profile: dict) -> dict:
                 "X-Title": "DataCraft Studio"
             },
             data=json.dumps({
-                "model": "openai/gpt-oss-20b:free",
+                "model": "qwen/qwen-2.5-72b-instruct:free",
                 "messages": [
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_prompt}
