@@ -69,6 +69,7 @@ const DataTablePage = () => {
 
     const statsPollingRef = useRef(null);
     const insightsPollingRef = useRef(null);
+    const [activeStatsJobId, setActiveStatsJobId] = useState(null);
 
     const [datasetSummary, setDatasetSummary] = useState(null);
     const [statsSidebarState, setStatsSidebarState] = useState('closed');
@@ -137,18 +138,26 @@ const DataTablePage = () => {
             const response = await fetch(`/api/statistics/${currentDataset.name}`, { method: 'POST' });
             if (!response.ok) throw new Error('Failed to start statistics job.');
             const { job_id } = await response.json();
+            setActiveStatsJobId(job_id);
             statsPollingRef.current = setInterval(async () => {
                 const statusResponse = await fetch(`/api/statistics/status/${job_id}`);
                 const data = await statusResponse.json();
-                if (data.status !== 'PENDING') {
-                    clearInterval(statsPollingRef.current);
-                    setIsStatsLoading(false);
-                    if (data.status === 'SUCCESS') {
-                        setDatasetStatistics(data.result);
-                    } else {
-                        toast.error(data.error || 'Failed to fetch statistics.');
+                
+                setActiveStatsJobId(currentActiveJobId => {
+                    if (job_id === currentActiveJobId) {
+                        if (data.status !== 'PENDING') {
+                            clearInterval(statsPollingRef.current);
+                            setIsStatsLoading(false);
+                            if (data.status === 'SUCCESS') {
+                                setDatasetStatistics(data.result);
+                            } else {
+                                toast.error(data.error || 'Failed to fetch statistics.');
+                                setDatasetStatistics(null);
+                            }
+                        }
                     }
-                }
+                    return currentActiveJobId;
+                });
             }, 3000);
         } catch (err) {
             toast.error(err.message);
@@ -273,13 +282,15 @@ const DataTablePage = () => {
     useEffect(() => {
         if (currentDataset) {
             loadData();
-            fetchDatasetStatistics();
+            if (statsSidebarState === 'open' || !datasetStatistics) {
+                fetchDatasetStatistics();
+            }
         }
         return () => {
             if (statsPollingRef.current) clearInterval(statsPollingRef.current);
             if (insightsPollingRef.current) clearInterval(insightsPollingRef.current);
         };
-    }, [currentDataset, loadData, fetchDatasetStatistics]);
+    }, [currentDataset, statsSidebarState, loadData, fetchDatasetStatistics]);
 
     useEffect(() => {
         if (!currentDataset && datasets.length > 0) {
@@ -288,11 +299,16 @@ const DataTablePage = () => {
     }, [datasets, currentDataset, setCurrentDataset]);
 
     const toggleStatsSidebar = () => {
-        setStatsSidebarState(s => {
-            const newState = s === 'open' ? 'closed' : 'open';
-            if (newState === 'open') setInsightsSidebarState('closed');
-            return newState;
-        });
+        const isOpening = statsSidebarState === 'closed';
+        if (isOpening) {
+            if (!datasetStatistics || datasetStatistics.filename !== currentDataset?.name) {
+                fetchDatasetStatistics();
+            }
+            setInsightsSidebarState('closed');
+            setStatsSidebarState('open');
+        } else {
+            setStatsSidebarState('closed');
+        }
     };
 
     const handleDatasetChange = (e) => {

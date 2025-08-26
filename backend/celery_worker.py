@@ -65,6 +65,8 @@ def generate_dataset_summary(file_path: str):
 @celery_app.task
 def generate_dataset_statistics(file_path: str):
     try:
+        file_name = os.path.basename(file_path)
+        
         df = pd.read_csv(file_path, on_bad_lines='skip')
         if df.empty:
             return {"status": "ERROR", "message": "Dataset is empty."}
@@ -77,12 +79,9 @@ def generate_dataset_statistics(file_path: str):
             is_numeric = pd.api.types.is_numeric_dtype(clean_series)
             null_count = int(series.isnull().sum())
             stat = {
-                "column": header,
-                "totalValues": len(clean_series),
-                "nullCount": null_count,
+                "column": header, "totalValues": len(clean_series), "nullCount": null_count,
                 "nullPercentage": (null_count / rows) * 100 if rows > 0 else 0,
-                "uniqueValues": series.nunique(),
-                "dataType": "Numeric" if is_numeric else "Text",
+                "uniqueValues": series.nunique(), "dataType": "Numeric" if is_numeric else "Text",
                 "mean": "N/A", "median": "N/A", "mode": "N/A"
             }
             if is_numeric and not clean_series.empty:
@@ -97,7 +96,9 @@ def generate_dataset_statistics(file_path: str):
             column_stats.append(stat)
         overall_null_count = sum(s['nullCount'] for s in column_stats)
         data_quality = ((total_cells - overall_null_count) / total_cells) * 100 if total_cells > 0 else 0
+        
         result = {
+            "filename": file_name,
             "totalRows": rows, "totalColumns": cols, "totalCells": total_cells,
             "overallNullCount": overall_null_count, "dataQuality": data_quality,
             "columnStats": column_stats
