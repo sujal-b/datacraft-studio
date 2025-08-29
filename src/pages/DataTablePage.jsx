@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useRef } from 'react';
+import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import DataTable from '../components/DataTable';
 import Papa from 'papaparse';
 import { useDatasets } from '../context/DatasetContext';
@@ -21,39 +21,26 @@ const ThemeSelector = ({ theme, setTheme }) => (
 const QuickActions = ({ onAction }) => {
     const [isOpen, setIsOpen] = useState(false);
     const ref = useRef(null);
-
     useEffect(() => {
         const handleClickOutside = (event) => {
-            if (ref.current && !ref.current.contains(event.target)) {
-                setIsOpen(false);
-            }
+            if (ref.current && !ref.current.contains(event.target)) setIsOpen(false);
         };
         document.addEventListener('mousedown', handleClickOutside);
         return () => document.removeEventListener('mousedown', handleClickOutside);
     }, [ref]);
-
     const handleSelect = (action) => {
         onAction(action);
         setIsOpen(false);
     };
-
     return (
         <div className="quick-actions-menu" ref={ref}>
             <button className="quick-actions-button" onClick={() => setIsOpen(o => !o)}>
-                <FiTool size={16} />
-                Quick Actions
-                <FiChevronDown size={16} style={{ transform: isOpen ? 'rotate(180deg)' : 'none', transition: 'transform 0.2s' }}/>
+                <FiTool size={16} /> Quick Actions <FiChevronDown size={16} style={{ transform: isOpen ? 'rotate(180deg)' : 'none' }}/>
             </button>
             {isOpen && (
                 <div className="quick-actions-dropdown">
-                    <button onClick={() => handleSelect('drop_na_rows')}>
-                        <strong>Drop Rows with Missing Values</strong>
-                        <span>Deletes any row with at least one empty cell.</span>
-                    </button>
-                    <button onClick={() => handleSelect('drop_duplicate_rows')}>
-                        <strong>Drop Duplicate Rows</strong>
-                        <span>Deletes all rows that are exact duplicates.</span>
-                    </button>
+                    <button onClick={() => handleSelect('drop_na_rows')}><strong>Drop Rows with Missing Values</strong><span>Deletes any row with at least one empty cell.</span></button>
+                    <button onClick={() => handleSelect('drop_duplicate_rows')}><strong>Drop Duplicate Rows</strong><span>Deletes all rows that are exact duplicates.</span></button>
                 </div>
             )}
         </div>
@@ -63,32 +50,23 @@ const QuickActions = ({ onAction }) => {
 const DataTablePage = () => {
     const { datasets, currentDataset, setCurrentDataset } = useDatasets();
     const [rowData, setRowData] = useState([]);
-    const [columnDefs, setColumnDefs] = useState([]);
-    const [theme, setTheme] = useState('ag-theme-alpine');
     const [error, setError] = useState('');
+    const [theme, setTheme] = useState('ag-theme-alpine');
+    
+    const [datasetMetrics, setDatasetMetrics] = useState(null);
+    const [areMetricsLoading, setAreMetricsLoading] = useState(true);
 
-    const statsPollingRef = useRef(null);
+    const metricsPollingRef = useRef(null);
     const insightsPollingRef = useRef(null);
-    const [activeStatsJobId, setActiveStatsJobId] = useState(null);
-
-    const [datasetSummary, setDatasetSummary] = useState(null);
-    const [statsSidebarState, setStatsSidebarState] = useState('closed');
-    const [datasetStatistics, setDatasetStatistics] = useState(null);
-    const [isStatsLoading, setIsStatsLoading] = useState(false);
     const [insightsSidebarState, setInsightsSidebarState] = useState('closed');
     const [sidebarColumn, setSidebarColumn] = useState(null);
     const [aiAnalysis, setAiAnalysis] = useState(null);
     const [isInsightsLoading, setIsInsightsLoading] = useState(false);
+    const [statsSidebarState, setStatsSidebarState] = useState('closed');
 
     const loadData = useCallback(async () => {
         if (!currentDataset) return;
         try {
-            const summaryResponse = await fetch('/api/datasets/dashboard-summary');
-            if (!summaryResponse.ok) throw new Error("Could not fetch dataset summaries.");
-            const summaries = await summaryResponse.json();
-            const currentSummary = summaries.find(s => s.filename === currentDataset.name);
-            setDatasetSummary(currentSummary);
-
             const urlToFetch = `${currentDataset.path}?t=${Date.now()}`;
             const response = await fetch(urlToFetch);
             if (!response.ok) throw new Error('Failed to fetch dataset');
@@ -100,28 +78,11 @@ const DataTablePage = () => {
                 skipEmptyLines: true,
                 complete: (result) => {
                     if (result.data && result.data.length > 0) {
-                        const data = result.data;
-                        const headers = Object.keys(data[0]);
-        
-                        const newColumnDefs = headers.map(header => ({
-                            headerName: header.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase()),
-                            field: header,
-                            headerComponentParams: {
-                                description: currentSummary?.column_types?.[header] || 'text'
-                            },
-                            sortable: true,
-                            filter: true,
-                            editable: true,
-                            enableRowGroup: true,
-                            ...(headers.indexOf(header) === 0 && { checkboxSelection: true, headerCheckboxSelection: true }),
-                        }));
-
-                        setColumnDefs(newColumnDefs);
-                        setRowData(data);
+                        setRowData(result.data);
                         setError('');
                     } else {
+                        setRowData([]);
                         setError('No data rows found in CSV');
-                        setRowData([]); setColumnDefs([]);
                     }
                 },
                 error: () => { setError('Failed to parse CSV file.'); }
@@ -129,41 +90,47 @@ const DataTablePage = () => {
         } catch (e) { setError(e.message || 'Could not load or process the file.'); }
     }, [currentDataset]);
 
-    const fetchDatasetStatistics = useCallback(async () => {
+    const fetchMetrics = useCallback(async () => {
         if (!currentDataset) return;
-        if (statsPollingRef.current) clearInterval(statsPollingRef.current);
-        setIsStatsLoading(true);
-        setDatasetStatistics(null);
-        try {
-            const response = await fetch(`/api/statistics/${currentDataset.name}`, { method: 'POST' });
-            if (!response.ok) throw new Error('Failed to start statistics job.');
-            const { job_id } = await response.json();
-            setActiveStatsJobId(job_id);
-            statsPollingRef.current = setInterval(async () => {
-                const statusResponse = await fetch(`/api/statistics/status/${job_id}`);
-                const data = await statusResponse.json();
-                
-                setActiveStatsJobId(currentActiveJobId => {
-                    if (job_id === currentActiveJobId) {
-                        if (data.status !== 'PENDING') {
-                            clearInterval(statsPollingRef.current);
-                            setIsStatsLoading(false);
-                            if (data.status === 'SUCCESS') {
-                                setDatasetStatistics(data.result);
-                            } else {
-                                toast.error(data.error || 'Failed to fetch statistics.');
-                                setDatasetStatistics(null);
-                            }
-                        }
-                    }
-                    return currentActiveJobId;
-                });
-            }, 3000);
-        } catch (err) {
-            toast.error(err.message);
-            setIsStatsLoading(false);
-        }
+        if (metricsPollingRef.current) clearInterval(metricsPollingRef.current);
+        setAreMetricsLoading(true);
+
+        const fetchData = async () => {
+            try {
+                const response = await fetch(`/api/dataset/${currentDataset.name}/statistics`);
+                if (response.status === 202) return;
+                if (!response.ok) throw new Error('Failed to fetch statistics.');
+
+                const data = await response.json();
+                setDatasetMetrics(data);
+                setAreMetricsLoading(false);
+                clearInterval(metricsPollingRef.current);
+            } catch (err) {
+                toast.error(err.message);
+                setAreMetricsLoading(false);
+                clearInterval(metricsPollingRef.current);
+            }
+        };
+        fetchData();
+        metricsPollingRef.current = setInterval(fetchData, 3000);
     }, [currentDataset]);
+
+    const forceRefreshMetrics = useCallback(() => {
+        if (!currentDataset) return;
+        toast.info("Refreshing dataset statistics...");
+        setDatasetMetrics(null);
+        fetch(`/api/dataset/${currentDataset.name}/refresh-statistics`, { method: 'POST' })
+            .then(res => {
+                if(res.ok) setTimeout(fetchMetrics, 2000);
+                else throw new Error("Failed to start statistics refresh job.");
+            })
+            .catch(err => toast.error(err.message));
+    }, [currentDataset, fetchMetrics]);
+
+    const handleActionComplete = useCallback(() => {
+        loadData();
+        forceRefreshMetrics();
+    }, [loadData, forceRefreshMetrics]);
 
     const handleRunTask = useCallback(async (taskType, column) => {
         if (!currentDataset) {
@@ -239,7 +206,7 @@ const DataTablePage = () => {
         }
     }, [currentDataset, loadData]);
 
-    const handleQuickAction = async (actionType) => {
+    const handleQuickAction = useCallback(async (actionType) => {
         if (!currentDataset) {
             toast.warn("Please select a dataset first.");
             return;
@@ -269,40 +236,46 @@ const DataTablePage = () => {
             const result = await response.json();
             
             setTimeout(() => {
-                loadData(); 
-                fetchDatasetStatistics();
                 toast.update(toastId, { render: "Cleaning successful! Table has been refreshed.", type: "success", isLoading: false, autoClose: 5000 });
+                handleActionComplete();
             }, 2000);
 
         } catch (error) {
             toast.update(toastId, { render: error.message, type: "error", isLoading: false, autoClose: 5000 });
         }
-    };
+    }, [currentDataset, handleActionComplete]);
+
+    const columnDefs = useMemo(() => {
+        if (!datasetMetrics?.columnStats) return [];
+        return datasetMetrics.columnStats.map(stat => ({
+            headerName: stat.column.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase()),
+            field: stat.column,
+            headerComponentParams: { description: stat.dataType },
+            sortable: true, filter: true, editable: true, enableRowGroup: true,
+            ...(datasetMetrics.columnStats.indexOf(stat) === 0 && { checkboxSelection: true, headerCheckboxSelection: true }),
+        }));
+    }, [datasetMetrics]);
 
     useEffect(() => {
         if (currentDataset) {
             loadData();
-            if (statsSidebarState === 'open' || !datasetStatistics) {
-                fetchDatasetStatistics();
-            }
+            fetchMetrics();
         }
         return () => {
-            if (statsPollingRef.current) clearInterval(statsPollingRef.current);
+            if (metricsPollingRef.current) clearInterval(metricsPollingRef.current);
             if (insightsPollingRef.current) clearInterval(insightsPollingRef.current);
         };
-    }, [currentDataset, statsSidebarState, loadData, fetchDatasetStatistics]);
+    }, [currentDataset, loadData, fetchMetrics]);
 
     useEffect(() => {
-        if (!currentDataset && datasets.length > 0) {
-            setCurrentDataset(datasets[0]);
-        }
+        if (!currentDataset && datasets.length > 0) setCurrentDataset(datasets[0]);
     }, [datasets, currentDataset, setCurrentDataset]);
 
     const toggleStatsSidebar = () => {
         const isOpening = statsSidebarState === 'closed';
         if (isOpening) {
-            if (!datasetStatistics || datasetStatistics.filename !== currentDataset?.name) {
-                fetchDatasetStatistics();
+            if (!datasetMetrics || datasetMetrics.filename !== currentDataset?.name) {
+                fetchMetrics();
             }
             setInsightsSidebarState('closed');
             setStatsSidebarState('open');
@@ -335,7 +308,7 @@ const DataTablePage = () => {
                         <FaFileCsv />
                         <div>
                             <strong>{currentDataset?.name || 'No file selected'}</strong>
-                            <span>{rowData.length} rows &times; {columnDefs.length} columns</span>
+                            <span>{rowData.length} rows &times; {columnDefs.length > 0 ? columnDefs.length : '...'} columns</span>
                         </div>
                     </div>
                     <div className="header-actions">
@@ -359,8 +332,8 @@ const DataTablePage = () => {
                 )}
             </div>
             <StatisticsSidebar
-                statistics={datasetStatistics}
-                isLoading={isStatsLoading}
+                statistics={datasetMetrics}
+                isLoading={areMetricsLoading}
                 sidebarState={statsSidebarState}
                 setSidebarState={setStatsSidebarState}
             />

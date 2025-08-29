@@ -42,7 +42,7 @@ const DataTable = ({ rowData, columnDefs, theme, onRunTask, onRefresh }) => {
     const getContextMenuItems = useCallback((params) => {
         const columnType = params.column.getColDef().headerComponentParams?.description;
         const isNumeric = ['integer', 'float'].includes(columnType);
-        const isCategorical = ['categorical', 'identifier', 'integer'].includes(columnType);
+        const isCategorical = ['categorical', 'identifier'].includes(columnType);
 
         let menuItems = [
             { name: 'Co-pilot Insights', action: () => onRunTask('diagnosis', params.column), icon: '<span class="ag-icon ag-icon-execute"></span>' },

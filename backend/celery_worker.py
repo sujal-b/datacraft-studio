@@ -14,98 +14,81 @@ from data_type_detector import detect_data_type
 celery_app = Celery('tasks', broker='redis://localhost:6379/0', backend='redis://localhost:6379/0')
 redis_cache = Redis(host='localhost', port=6379, db=1, decode_responses=True)
 
-@celery_app.task
-def generate_dataset_summary(file_path: str):
+@celery_app.task(time_limit=900) # 15 minute time limit for huge files
+def generate_comprehensive_stats(file_path: str):
     try:
         file_name = os.path.basename(file_path)
+        cache_key = f"statistics:{file_name}"
+        
         common_na_values = ['', '#N/A', '#N/A N/A', '#NA', '-1.#IND', '-1.#QNAN', '-NaN', '-nan',
                             '1.#IND', '1.#QNAN', '<NA>', 'N/A', 'NA', 'NULL', 'NaN', 'n/a',
                             'nan', 'null', 'None']
-        df = pd.read_csv(file_path, on_bad_lines='skip', na_values=common_na_values)
         
+        df = pd.read_csv(file_path, on_bad_lines='skip', na_values=common_na_values)
+
         if df.empty:
-            redis_cache.hdel("dashboard_summaries", file_name)
+            redis_cache.delete(cache_key)
             return
 
-        column_types = {}
-        for column in df.columns:
-            column_types[column] = detect_data_type(df[column])
-
+        # --- Perform all calculations in one pass ---
         rows, columns = df.shape
         missing_cells = df.isnull().sum().sum()
-        total_cells = rows * columns if rows > 0 and columns > 0 else 1
+        total_cells = rows * columns if rows > 0 else 1
         missing_pct = (missing_cells / total_cells) * 100
         duplicate_rows = df.duplicated().sum()
         duplicate_pct = (duplicate_rows / rows) * 100 if rows > 0 else 0
-        inconsistent_rows = 0
-        text_cols = df.select_dtypes(include=['object']).columns
-        if not text_cols.empty:
-            whitespace_issues = df[text_cols].apply(lambda x: x.str.strip() != x, axis=1).any(axis=1)
-            inconsistent_rows = whitespace_issues.sum()
-        inconsistency_pct = (inconsistent_rows / rows) * 100 if rows > 0 else 0
-        quality_score = max(0, 100 - missing_pct - duplicate_pct - inconsistency_pct)
-        
+        quality_score = max(0, 100 - missing_pct - duplicate_pct)
         status = "RAW"
         if quality_score > 90: status = "CLEANED"
         elif quality_score > 60: status = "CLEANING"
         
-        summary = {
-            "id": file_name, "filename": file_name,
-            "size": f"{os.path.getsize(file_path) / (1024*1024):.1f}MB",
-            "rows": rows, "columns": columns, "status": status,
-            "qualityScore": round(quality_score), "missing": round(missing_pct),
-            "duplicates": round(duplicate_pct), "inconsistencies": round(inconsistency_pct),
-            "lastModified": datetime.fromtimestamp(os.path.getmtime(file_path)).strftime('%Y-%m-%d'),
-            "column_types": column_types
-        }
-        redis_cache.hset("dashboard_summaries", file_name, json.dumps(summary))
-    except Exception as e:
-        print(f"CRITICAL ERROR in generate_dataset_summary for {file_path}: {e}")
-
-@celery_app.task
-def generate_dataset_statistics(file_path: str):
-    try:
-        file_name = os.path.basename(file_path)
-        
-        df = pd.read_csv(file_path, on_bad_lines='skip')
-        if df.empty:
-            return {"status": "ERROR", "message": "Dataset is empty."}
-        rows, cols = df.shape
-        total_cells = rows * cols
         column_stats = []
+        numeric_column_count = 0
+        text_column_count = 0
+
         for header in df.columns:
             series = df[header]
             clean_series = series.dropna()
-            is_numeric = pd.api.types.is_numeric_dtype(clean_series)
             null_count = int(series.isnull().sum())
+            data_type = detect_data_type(series)
+
+            if data_type in ['integer', 'float', 'identifier']:
+                numeric_column_count += 1
+            else:
+                text_column_count += 1
+            
             stat = {
-                "column": header, "totalValues": len(clean_series), "nullCount": null_count,
+                "column": header, "dataType": data_type, "nullCount": null_count,
                 "nullPercentage": (null_count / rows) * 100 if rows > 0 else 0,
-                "uniqueValues": series.nunique(), "dataType": "Numeric" if is_numeric else "Text",
+                "uniqueValues": series.nunique(), "totalValues": len(clean_series),
                 "mean": "N/A", "median": "N/A", "mode": "N/A"
             }
-            if is_numeric and not clean_series.empty:
+            if data_type in ['integer', 'float'] and not clean_series.empty:
                 stat["mean"] = round(clean_series.mean(), 2)
                 stat["median"] = round(clean_series.median(), 2)
                 modes = clean_series.mode()
                 if not modes.empty:
-                    mode_str = ", ".join(modes.astype(str).tolist())
-                    if len(mode_str) > 30:
-                        mode_str = mode_str[:27] + "..."
-                    stat["mode"] = mode_str
+                    stat["mode"] = ", ".join(modes.astype(str).tolist())
             column_stats.append(stat)
-        overall_null_count = sum(s['nullCount'] for s in column_stats)
-        data_quality = ((total_cells - overall_null_count) / total_cells) * 100 if total_cells > 0 else 0
-        
-        result = {
+
+        comprehensive_result = {
             "filename": file_name,
-            "totalRows": rows, "totalColumns": cols, "totalCells": total_cells,
-            "overallNullCount": overall_null_count, "dataQuality": data_quality,
-            "columnStats": column_stats
+            "lastModified": datetime.fromtimestamp(os.path.getmtime(file_path)).strftime('%Y-%m-%d'),
+            "size": f"{os.path.getsize(file_path) / (1024*1024):.1f}MB",
+            "rows": rows, "columns": columns, "totalCells": total_cells,
+            "status": status, "qualityScore": round(quality_score),
+            "missing_pct": round(missing_pct), "duplicates_pct": round(duplicate_pct),
+            "overallNullCount": int(missing_cells),
+            "columnStats": column_stats,
+            "numericColumnCount": numeric_column_count,
+            "textColumnCount": text_column_count
         }
-        return {"status": "SUCCESS", "result": result}
+
+        redis_cache.set(cache_key, json.dumps(comprehensive_result), ex=86400)
+        return comprehensive_result
     except Exception as e:
-        return {"status": "FAILURE", "error": str(e)}
+        print(f"CRITICAL ERROR in generate_comprehensive_stats for {file_path}: {e}")
+        raise e
 
 def get_temporal_profile(df: pd.DataFrame, col: str) -> dict:
     time_cols = [c for c in df.columns if 'time' in c.lower() or 'date' in c.lower()]
@@ -246,12 +229,11 @@ def perform_imputation(df: pd.DataFrame, column_name: str, method: str, value=No
         fill_value = df[column_name].mode()[0]
         df[column_name].fillna(fill_value, inplace=True)
     elif method == 'constant':
-        # Coerce the provided value to the column's dtype if possible
         dtype = df[column_name].dtype
         try:
             fill_value = pd.Series([value]).astype(dtype).iloc[0]
         except (ValueError, TypeError):
-            fill_value = value # Fallback to the raw value
+            fill_value = value
         df[column_name].fillna(fill_value, inplace=True)
     else:
         raise ValueError(f"Invalid imputation method: {method}")

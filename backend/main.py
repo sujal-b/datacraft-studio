@@ -5,17 +5,17 @@ import os
 import glob
 import json
 from typing import Optional, Dict, Any
-
 from fastapi.staticfiles import StaticFiles
-from celery_worker import generate_dataset_summary, route_task, celery_app as worker, generate_dataset_statistics
+from celery_worker import celery_app as worker, generate_comprehensive_stats
 from celery.result import AsyncResult
 from fastapi.middleware.cors import CORSMiddleware
 from redis import Redis
+from dotenv import load_dotenv
 
+load_dotenv()
 REDIS_HOST = os.getenv("REDIS_HOST", "localhost")
 REDIS_PORT = int(os.getenv("REDIS_PORT", 6379))
 REDIS_DB_CACHE = int(os.getenv("REDIS_DB_CACHE", 1))
-
 redis_cache: Redis = Redis(host=REDIS_HOST, port=REDIS_PORT, db=REDIS_DB_CACHE, decode_responses=True)
 
 app = FastAPI()
@@ -58,7 +58,7 @@ async def upload_dataset(file: UploadFile = File(...)):
         versioned_path = get_next_version_path(original_path)
         with open(versioned_path, "wb") as buffer:
             shutil.copyfileobj(file.file, buffer)
-        generate_dataset_summary.delay(versioned_path)
+        generate_comprehensive_stats.delay(versioned_path)
         return {"status": "SUCCESS", "message": "File uploaded", "path": f"/{os.path.basename(versioned_path)}", "name": os.path.basename(versioned_path)}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Could not save file: {e}")
@@ -79,19 +79,52 @@ async def get_available_datasets():
 async def get_dashboard_summary():
     try:
         disk_files = {os.path.basename(p) for p in glob.glob(os.path.join(public_dir, "*.csv"))}
-        cached_files = {f for f in redis_cache.hkeys("dashboard_summaries")}
-        files_to_add = disk_files - cached_files
-        for filename in files_to_add:
-            file_path = os.path.join(public_dir, filename)
-            generate_dataset_summary.delay(file_path)
-        files_to_remove = cached_files - disk_files
-        if files_to_remove:
-            redis_cache.hdel("dashboard_summaries", *files_to_remove)
-        all_summaries_json = redis_cache.hgetall("dashboard_summaries")
-        summaries = [json.loads(s) for s in all_summaries_json.values()]
+        cached_files = {k.split(':')[1] for k in redis_cache.keys("statistics:*")}
+        files_to_process = disk_files - cached_files
+        for filename in files_to_process:
+            generate_comprehensive_stats.delay(os.path.join(public_dir, filename))
+        
+        stat_keys = redis_cache.keys("statistics:*")
+        if not stat_keys: return []
+        
+        all_stats = [json.loads(s) for s in redis_cache.mget(stat_keys) if s]
+        
+        summaries = [{
+            "id": stats["filename"], "filename": stats["filename"], "size": stats["size"],
+            "rows": stats["rows"], "columns": stats["columns"], "status": stats["status"],
+            "qualityScore": stats["qualityScore"], "missing": stats["missing_pct"],
+            "duplicates": stats["duplicates_pct"], "inconsistencies": 0,
+            "lastModified": stats["lastModified"]
+        } for stats in all_stats]
         return summaries
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to retrieve summaries from cache: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to retrieve summaries: {str(e)}")
+    
+@app.get("/api/dataset/{dataset_name}/statistics")
+async def get_dataset_statistics(dataset_name: str):
+    cache_key = f"statistics:{dataset_name}"
+    cached_result = redis_cache.get(cache_key)
+    if cached_result:
+        return json.loads(cached_result)
+    else:
+        file_path = os.path.join(public_dir, dataset_name)
+        if not os.path.exists(file_path):
+            raise HTTPException(status_code=404, detail="Dataset not found.")
+        generate_comprehensive_stats.delay(file_path)
+        raise HTTPException(status_code=202, detail="Statistics generation is in progress.")
+    
+@app.post("/api/dataset/{dataset_name}/refresh-statistics")
+async def refresh_dataset_statistics(dataset_name: str):
+    file_path = os.path.join(public_dir, dataset_name)
+    if not os.path.exists(file_path):
+        raise HTTPException(status_code=404, detail="Dataset not found.")
+    
+    cache_key = f"statistics:{dataset_name}"
+    redis_cache.delete(cache_key)
+    generate_comprehensive_stats.delay(file_path)
+    return {"message": "Statistics refresh initiated."}
+
+
 
 @app.post("/api/submit_task")
 async def submit_task(request: TaskRequest):
@@ -118,7 +151,7 @@ async def start_statistics_generation(dataset_name: str):
         file_path = os.path.join(public_dir, dataset_name)
         if not os.path.exists(file_path):
             raise HTTPException(status_code=404, detail="Dataset not found.")
-        task = generate_dataset_statistics.delay(file_path)
+        task = generate_comprehensive_stats.delay(file_path)
         return {"job_id": task.id, "status": "Statistics generation job started."}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
