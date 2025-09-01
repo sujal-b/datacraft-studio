@@ -1,4 +1,3 @@
-// src/components/InsightsSidebar.jsx
 import React from 'react';
 import '../styles/InsightsSidebar.css';
 import { FiChevronRight, FiChevronLeft } from 'react-icons/fi';
@@ -22,7 +21,6 @@ const AnalysisResult = ({ analysis }) => {
     );
   }
   
-  // The AI's full response is now in analysis.result
   const aiResponse = analysis.result;
   if (!aiResponse) return <div className="error-message"><p>No AI response data available.</p></div>;
 
@@ -61,7 +59,6 @@ const AnalysisResult = ({ analysis }) => {
   );
 };
 
-// The sidebar now just receives the data to display
 const InsightsSidebar = ({ column, aiAnalysis, isLoading, sidebarState, setSidebarState }) => {
   if (!column || sidebarState === 'closed') return null;
 
