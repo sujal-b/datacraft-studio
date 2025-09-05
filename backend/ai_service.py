@@ -81,7 +81,8 @@ def get_ai_interpretation(profile: dict) -> dict:
                 "X-Title": "DataCraft Studio"
             },
             data=json.dumps({
-                "model": "qwen/qwen-2.5-72b-instruct:free",
+                "model": "qwen/qwen3-30b-a3b:free",
+                "temperature": 0.1,
                 "messages": [
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_prompt}

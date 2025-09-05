@@ -254,3 +254,36 @@
 .text-orange-600 {
   color: #EA580C;
 }
+
+/* delete ICON */
+.delete-dataset-btn {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  background-color: #FEE2E2;
+  color: #B91C1C;
+  border: none;
+  border-radius: 50%;
+  width: 28px;
+  height: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  
+
+  opacity: 0;
+  transform: scale(0.8);
+  transition: opacity 0.2s ease-in-out, transform 0.2s ease-in-out;
+  z-index: 10;
+}
+
+.dataset-card:hover .delete-dataset-btn {
+  opacity: 1;
+  transform: scale(1);
+}
+
+.delete-dataset-btn:hover {
+  background-color: #EF4444;
+  color: #FFFFFF;
+}

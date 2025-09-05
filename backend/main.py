@@ -62,6 +62,27 @@ async def upload_dataset(file: UploadFile = File(...)):
         return {"status": "SUCCESS", "message": "File uploaded", "path": f"/{os.path.basename(versioned_path)}", "name": os.path.basename(versioned_path)}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Could not save file: {e}")
+    
+@app.delete("/api/dataset/{dataset_name}")
+async def delete_dataset(dataset_name: str):
+    try:
+        if ".." in dataset_name or "/" in dataset_name:
+            raise HTTPException(status_code=400, detail="Invalid dataset name.")
+
+        file_path = os.path.join(public_dir, dataset_name)
+        cache_key = f"statistics:{dataset_name}"
+
+        if os.path.exists(file_path):
+            os.remove(file_path)
+        else:
+            print(f"Info: Attempted to delete '{dataset_name}', but file was already gone.")
+
+        if redis_cache.exists(cache_key):
+            redis_cache.delete(cache_key)
+
+        return {"message": f"Successfully ensured dataset '{dataset_name}' is deleted."}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"A server error occurred while deleting the dataset: {str(e)}")
 
 @app.get("/api/datasets")
 async def get_available_datasets():
@@ -83,11 +104,17 @@ async def get_dashboard_summary():
         files_to_process = disk_files - cached_files
         for filename in files_to_process:
             generate_comprehensive_stats.delay(os.path.join(public_dir, filename))
-        
+
+        files_to_remove = cached_files - disk_files
+        if files_to_remove:
+            keys_to_delete = [f"statistics:{fname}" for fname in files_to_remove]
+            redis_cache.delete(*keys_to_delete)
+
         stat_keys = redis_cache.keys("statistics:*")
         if not stat_keys: return []
         
-        all_stats = [json.loads(s) for s in redis_cache.mget(stat_keys) if s]
+        all_stats_raw = redis_cache.mget(stat_keys)
+        all_stats = [json.loads(s) for s in all_stats_raw if s]
         
         summaries = [{
             "id": stats["filename"], "filename": stats["filename"], "size": stats["size"],

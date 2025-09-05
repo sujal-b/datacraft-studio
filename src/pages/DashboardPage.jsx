@@ -2,13 +2,13 @@ import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useDatasets } from '../context/DatasetContext';
 import { toast } from 'react-toastify';
-import { Upload, Database, AlertTriangle, TrendingUp, Activity, Calendar } from 'lucide-react';
+import { Upload, Database, AlertTriangle, TrendingUp, Activity, Calendar, X } from 'lucide-react';
 import '../styles/Dashboard.css';
 
 const DashboardPage = () => {
   const [datasetsSummary, setDatasetsSummary] = useState([]);
   const [isLoading, setIsLoading] = useState(true);
-  const { datasets, setCurrentDataset } = useDatasets();
+  const { datasets, setCurrentDataset, removeDataset } = useDatasets();
   const navigate = useNavigate();
 
   useEffect(() => {
@@ -34,6 +34,32 @@ const DashboardPage = () => {
       navigate('/data-table');
     } else {
       toast.error("Could not find the selected dataset.");
+    }
+  };
+
+  const handleDeleteDataset = async (e, datasetName) => {
+    e.stopPropagation();
+
+    if (!window.confirm(`Are you sure you want to permanently delete '${datasetName}'? This action cannot be undone.`)) {
+        return;
+    }
+
+    try {
+        const response = await fetch(`/api/dataset/${datasetName}`, {
+            method: 'DELETE',
+        });
+
+        if (!response.ok) {
+            const errData = await response.json();
+            throw new Error(errData.detail || "Failed to delete dataset.");
+        }
+
+        setDatasetsSummary(prev => prev.filter(d => d.filename !== datasetName));
+        removeDataset(datasetName);
+        toast.success(`Dataset '${datasetName}' was successfully deleted.`);
+
+    } catch (error) {
+        toast.error(error.message);
     }
   };
 
@@ -111,7 +137,15 @@ const DashboardPage = () => {
         {datasetsSummary.map((dataset) => {
           const qualityClass = getQualityColorClass(dataset.qualityScore);
           return (
-            <div key={dataset.id} className="dataset-card" onClick={() => handleCardClick(dataset)}>
+            <div key={dataset.id} className="dataset-card" onClick={() => handleCardClick(dataset)} style={{ position: 'relative' }}>
+              <button
+                className="delete-dataset-btn"
+                title={`Delete ${dataset.filename}`}
+                onClick={(e) => handleDeleteDataset(e, dataset.filename)}
+              >
+                <X size={16} />
+              </button>
+
               <div className="card-header">
                 <div>
                   <h3 className="card-title">{dataset.filename}</h3>
@@ -119,6 +153,7 @@ const DashboardPage = () => {
                 </div>
                 <span className={`status-badge ${getStatusColorClass(dataset.status)}`}>{dataset.status}</span>
               </div>
+
               <div className="card-content">
                 <div className="quality-score-section">
                   <span>DATA QUALITY SCORE</span>

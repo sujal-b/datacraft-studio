@@ -46,13 +46,22 @@ export const DatasetProvider = ({ children }) => {
         setCurrentDataset(newDataset);
     };
 
+    const removeDataset = (datasetName) => {
+        setDatasets(prev => prev.filter(d => d.name !== datasetName));
+        if (currentDataset?.name === datasetName) {
+            setDatasets(prev => {
+                if (prev.length > 0) {
+                    setCurrentDataset(prev[0]);
+                } else {
+                    setCurrentDataset(null);
+                }
+                return prev;
+            });
+        }
+    };
+
     const value = useMemo(() => ({
-        datasets,
-        addDataset,
-        currentDataset,
-        setCurrentDataset,
-        isLoading,
-        error
+        datasets, addDataset, currentDataset, setCurrentDataset, isLoading, error, removeDataset
     }), [datasets, currentDataset, isLoading, error]);
 
     return (
@@ -62,10 +71,4 @@ export const DatasetProvider = ({ children }) => {
     );
 };
 
-export const useDatasets = () => {
-    const context = useContext(DatasetContext);
-    if (context === undefined) {
-        throw new Error('useDatasets must be used within a DatasetProvider');
-    }
-    return context;
-};
+export const useDatasets = () => useContext(DatasetContext);
