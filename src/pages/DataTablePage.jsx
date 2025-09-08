@@ -138,7 +138,11 @@ const DataTablePage = () => {
             return;
         }
 
-        const modificationTasks = ['delete_column', 'impute_mean', 'impute_median', 'impute_mode', 'impute_constant'];
+        const modificationTasks = [
+            'delete_column', 
+            'impute_mean', 'impute_median', 'impute_mode', 'impute_constant',
+            'standard_scale', 'minmax_scale'
+        ];
         let taskParams = {};
 
         if (taskType === 'impute_constant') {
@@ -174,11 +178,11 @@ const DataTablePage = () => {
             
             const { job_id } = await response.json();
             toast.update(toastId, { render: `Job '${taskType}' submitted.`, type: 'info', isLoading: false, autoClose: 3000 });
-
+            
             if (modificationTasks.includes(taskType)) {
                 setTimeout(() => {
-                    toast.success("Action complete! Refreshing data...");
-                    loadData();
+                    toast.success("Action complete! Refreshing UI...");
+                    handleActionComplete();
                 }, 2000); 
                 return;
             }
@@ -204,7 +208,7 @@ const DataTablePage = () => {
                 setIsInsightsLoading(false);
             }
         }
-    }, [currentDataset, loadData]);
+    }, [currentDataset, handleActionComplete]);
 
     const handleQuickAction = useCallback(async (actionType) => {
         if (!currentDataset) {
