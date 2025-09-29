@@ -6,7 +6,7 @@ import glob
 import json
 from typing import Optional, Dict, Any
 from fastapi.staticfiles import StaticFiles
-from celery_worker import celery_app as worker, generate_comprehensive_stats
+from celery_worker import celery_app as worker, generate_comprehensive_stats, generate_diagnostic_report, generate_treatment_plans_task
 from celery.result import AsyncResult
 from fastapi.middleware.cors import CORSMiddleware
 from redis import Redis
@@ -28,6 +28,10 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+class GeneratePlansRequest(BaseModel):
+    target_variable: str
+    goal: str
 
 class CleanRequest(BaseModel):
     dataset_name: str
@@ -51,6 +55,26 @@ def get_next_version_path(file_path: str) -> str:
             return new_path
         version += 1
 
+@app.post("/api/dataset/{dataset_name}/generate-plans")
+async def generate_plans(dataset_name: str, request: GeneratePlansRequest):
+    """
+    Endpoint to kick off the AI-powered treatment plan generation task.
+    """
+    try:
+        # Verify file exists before dispatching a potentially long-running task
+        file_path = os.path.join(public_dir, dataset_name)
+        if not os.path.exists(file_path):
+            raise HTTPException(status_code=404, detail="Dataset not found.")
+
+        task = generate_treatment_plans_task.delay(
+            dataset_name=dataset_name,
+            target_variable=request.target_variable,
+            goal=request.goal
+        )
+        return {"job_id": task.id, "status": "Treatment plan generation job started."}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
 @app.post("/api/upload")
 async def upload_dataset(file: UploadFile = File(...)):
     try:
@@ -58,7 +82,11 @@ async def upload_dataset(file: UploadFile = File(...)):
         versioned_path = get_next_version_path(original_path)
         with open(versioned_path, "wb") as buffer:
             shutil.copyfileobj(file.file, buffer)
+        
+        # Dispatch both tasks concurrently for efficiency
         generate_comprehensive_stats.delay(versioned_path)
+        generate_diagnostic_report.delay(versioned_path)
+
         return {"status": "SUCCESS", "message": "File uploaded", "path": f"/{os.path.basename(versioned_path)}", "name": os.path.basename(versioned_path)}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Could not save file: {e}")
@@ -70,15 +98,20 @@ async def delete_dataset(dataset_name: str):
             raise HTTPException(status_code=400, detail="Invalid dataset name.")
 
         file_path = os.path.join(public_dir, dataset_name)
-        cache_key = f"statistics:{dataset_name}"
+        
+        # Expanded to also clear the new diagnostic cache
+        cache_keys_to_delete = [
+            f"statistics:{dataset_name}",
+            f"diagnostics:{dataset_name}"
+        ]
 
         if os.path.exists(file_path):
             os.remove(file_path)
         else:
             print(f"Info: Attempted to delete '{dataset_name}', but file was already gone.")
 
-        if redis_cache.exists(cache_key):
-            redis_cache.delete(cache_key)
+        # Delete multiple keys from Redis if they exist
+        redis_cache.delete(*cache_keys_to_delete)
 
         return {"message": f"Successfully ensured dataset '{dataset_name}' is deleted."}
     except Exception as e:
@@ -127,6 +160,20 @@ async def get_dashboard_summary():
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to retrieve summaries: {str(e)}")
     
+@app.get("/api/dataset/{dataset_name}/diagnostics")
+async def get_dataset_diagnostics(dataset_name: str):
+    cache_key = f"diagnostics:{dataset_name}"
+    cached_result = redis_cache.get(cache_key)
+    if cached_result:
+        return json.loads(cached_result)
+    else:
+        file_path = os.path.join(public_dir, dataset_name)
+        if not os.path.exists(file_path):
+            raise HTTPException(status_code=404, detail="Dataset not found.")
+        # The task is already triggered on upload, so we just signal it's in progress
+        generate_diagnostic_report.delay(file_path)
+        raise HTTPException(status_code=202, detail="Diagnostic report generation is in progress.")
+    
 @app.get("/api/dataset/{dataset_name}/statistics")
 async def get_dataset_statistics(dataset_name: str):
     cache_key = f"statistics:{dataset_name}"
@@ -146,10 +193,12 @@ async def refresh_dataset_statistics(dataset_name: str):
     if not os.path.exists(file_path):
         raise HTTPException(status_code=404, detail="Dataset not found.")
     
-    cache_key = f"statistics:{dataset_name}"
-    redis_cache.delete(cache_key)
+    # Refresh both statistics and diagnostics
+    redis_cache.delete(f"statistics:{dataset_name}")
+    redis_cache.delete(f"diagnostics:{dataset_name}")
     generate_comprehensive_stats.delay(file_path)
-    return {"message": "Statistics refresh initiated."}
+    generate_diagnostic_report.delay(file_path)
+    return {"message": "Statistics and diagnostics refresh initiated."}
 
 
 

@@ -8,14 +8,35 @@ from datetime import datetime, timezone
 from scipy import stats
 from statsmodels.tsa.stattools import acf
 from sklearn.preprocessing import StandardScaler, MinMaxScaler
-from ai_service import get_ai_interpretation
+from ai_service import get_ai_interpretation, get_treatment_plan_hypotheses
 from data_type_detector import detect_data_type
+
+class NumpyJSONEncoder(json.JSONEncoder):
+    """
+    A comprehensive JSON encoder that handles all common NumPy and pandas data types.
+    This prevents TypeError exceptions for types like numpy.int64, numpy.float64, 
+    pandas.Timestamp, etc.
+    """
+    def default(self, obj):
+        if isinstance(obj, np.integer):
+            return int(obj)
+        if isinstance(obj, np.floating):
+            return float(obj)
+        if isinstance(obj, np.ndarray):
+            return obj.tolist()
+        if isinstance(obj, np.bool_):
+            return bool(obj)
+        if isinstance(obj, pd.Timestamp):
+            return obj.isoformat() # Convert Timestamp to standard ISO string
+        return super(NumpyJSONEncoder, self).default(obj)
+
 
 celery_app = Celery('tasks', broker='redis://localhost:6379/0', backend='redis://localhost:6379/0')
 redis_cache = Redis(host='localhost', port=6379, db=1, decode_responses=True)
 
 @celery_app.task(time_limit=900) # 15 minute time limit for huge files
 def generate_comprehensive_stats(file_path: str):
+    # This function remains unchanged.
     try:
         file_name = os.path.basename(file_path)
         cache_key = f"statistics:{file_name}"
@@ -84,11 +105,171 @@ def generate_comprehensive_stats(file_path: str):
             "textColumnCount": text_column_count
         }
 
-        redis_cache.set(cache_key, json.dumps(comprehensive_result), ex=86400)
+        redis_cache.set(cache_key, json.dumps(comprehensive_result, cls=NumpyJSONEncoder), ex=86400)
         return comprehensive_result
     except Exception as e:
         print(f"CRITICAL ERROR in generate_comprehensive_stats for {file_path}: {e}")
         raise e
+
+@celery_app.task(time_limit=1800)
+def generate_diagnostic_report(file_path: str):
+    """
+    Reads a file ONCE and generates a single, comprehensive, and detailed
+    Diagnostic Report with metrics optimized for LLM-powered data cleaning and imputation.
+    """
+    try:
+        file_name = os.path.basename(file_path)
+        cache_key = f"diagnostics:{file_name}"
+
+        df = pd.read_csv(
+            file_path,
+            on_bad_lines='skip',
+            na_values=['', 'NA', 'N/A', 'NULL', 'None', 'nan', 'NaN'],
+            encoding='utf-8'
+        )
+        if df.empty:
+            redis_cache.delete(cache_key)
+            return {"status": "ERROR", "message": "Dataset is empty."}
+
+        rows, columns = df.shape
+        duplicate_row_count = int(df.duplicated().sum())
+        total_missing_cells = int(df.isnull().sum().sum())
+        total_cells = rows * columns
+        overall_missing_percentage = (
+            (total_missing_cells / total_cells) * 100 if total_cells > 0 else 0
+        )
+        max_missing_column_percentage = round(df.isnull().mean().max() * 100, 2)
+        rows_gt_50pct_nulls = int((df.isnull().mean(axis=1) > 0.5).sum())
+
+        dataset_summary = {
+            "row_count": rows,
+            "column_count": columns,
+            "duplicate_row_count": duplicate_row_count,
+            "total_missing_cells": total_missing_cells,
+            "overall_missing_percentage": round(overall_missing_percentage, 2),
+            "max_missing_column_percentage": max_missing_column_percentage,
+            "rows_gt_50pct_nulls": rows_gt_50pct_nulls,
+        }
+
+        column_diagnostics = []
+        for header in df.columns:
+            series = df[header]
+            clean_series = series.dropna()
+            data_type = detect_data_type(series)
+            unique_count = series.nunique(dropna=True)
+            unique_ratio = round(unique_count / rows, 4) if rows else 0
+            constant_flag = unique_count == 1
+
+            col_diag = {
+                "column_name": header,
+                "data_type": data_type,
+                "missing_count": int(series.isnull().sum()),
+                "missing_percentage": round(series.isnull().mean() * 100, 2),
+                "unique_count": int(unique_count),
+                "unique_ratio": unique_ratio,
+                "constant_flag": bool(constant_flag) # Defensive bool cast
+            }
+
+            if data_type in ['integer', 'float'] and not clean_series.empty:
+                q1, q3 = clean_series.quantile(0.25), clean_series.quantile(0.75)
+                iqr = q3 - q1
+                outlier_count = (
+                    ((clean_series < (q1 - 1.5 * iqr)) | (clean_series > (q3 + 1.5 * iqr))).sum()
+                )
+                if clean_series.nunique() > 2:
+                    skewness = round(float(clean_series.skew()), 2)
+                    kurtosis = round(float(clean_series.kurtosis()), 2)
+                else:
+                    skewness, kurtosis = None, None
+
+                col_diag["numeric_profile"] = {
+                    "mean": round(float(clean_series.mean()), 2),
+                    "median": round(float(clean_series.median()), 2),
+                    "std_dev": round(float(clean_series.std()), 2),
+                    "min": round(float(clean_series.min()), 2),
+                    "max": round(float(clean_series.max()), 2),
+                    "skewness": skewness,
+                    "kurtosis": kurtosis,
+                    "outlier_count": int(outlier_count),
+                    "outlier_percentage": round((outlier_count / len(clean_series) * 100) if len(clean_series) > 0 else 0, 2)
+                }
+
+            elif data_type == "categorical" and not clean_series.empty:
+                value_counts = clean_series.value_counts()
+                top_5 = value_counts.head(5).to_dict()
+                most_freq_pct = (
+                    round((value_counts.iloc[0] / len(clean_series)) * 100, 2)
+                    if not value_counts.empty
+                    else 0
+                )
+                col_diag["categorical_profile"] = {
+                    "top_5_categories": {str(k): int(v) for k, v in top_5.items()},
+                    "most_frequent_category_percentage": most_freq_pct
+                }
+
+            elif data_type == "date" and not clean_series.empty:
+                datetime_series = pd.to_datetime(clean_series, errors="coerce").dropna()
+                if not datetime_series.empty:
+                    col_diag["datetime_profile"] = {
+                        "min_date": datetime_series.min(), # Let the encoder handle Timestamp
+                        "max_date": datetime_series.max(), # Let the encoder handle Timestamp
+                    }
+
+            elif data_type == "text" and not clean_series.empty:
+                lengths = clean_series.astype(str).str.len()
+                col_diag["text_profile"] = {
+                    "avg_length": round(float(lengths.mean()), 2),
+                    "empty_string_count": int((clean_series == '').sum())
+                }
+
+            column_diagnostics.append(col_diag)
+
+        diagnostic_report = {
+            "filename": file_name,
+            "dataset_summary": dataset_summary,
+            "column_diagnostics": column_diagnostics,
+        }
+        
+        redis_cache.set(cache_key, json.dumps(diagnostic_report, cls=NumpyJSONEncoder), ex=86400)
+        
+        return diagnostic_report
+
+    except Exception as e:
+        print(f"CRITICAL ERROR in generate_diagnostic_report: {e}")
+        raise e
+
+# --- The rest of the file (get_temporal_profile, route_task, etc.) remains unchanged. ---
+
+@celery_app.task(time_limit=1800)
+def generate_treatment_plans_task(dataset_name: str, target_variable: str, goal: str):
+    """
+    Generates three competing data cleaning plans by passing the diagnostic report to an LLM.
+    """
+    try:
+        cache_key = f"diagnostics:{dataset_name}"
+        report_str = redis_cache.get(cache_key)
+        
+        if not report_str:
+            return {"status": "FAILURE", "error": f"Diagnostic report for {dataset_name} not found in cache."}
+            
+        diagnostic_report = json.loads(report_str)
+        
+        # Add context for the AI, which can be used in more advanced prompts later
+        diagnostic_report['modeling_context'] = {
+            'target_variable': target_variable,
+            'goal': goal
+        }
+
+        plans = get_treatment_plan_hypotheses(diagnostic_report)
+
+        if "error" in plans:
+             return {"status": "FAILURE", "error": plans.get("details", "AI service failed to generate plans.")}
+
+        return {"status": "SUCCESS", "result": plans}
+        
+    except Exception as e:
+        print(f"CRITICAL ERROR in generate_treatment_plans_task for {dataset_name}: {e}")
+        return {"status": "FAILURE", "error": str(e)}
 
 def get_temporal_profile(df: pd.DataFrame, col: str) -> dict:
     time_cols = [c for c in df.columns if 'time' in c.lower() or 'date' in c.lower()]
@@ -175,10 +356,6 @@ def perform_delete_column(df: pd.DataFrame, column_name: str, file_path: str):
 
 @celery_app.task
 def perform_dataset_cleaning_task(file_path: str, action_type: str):
-    """
-    Performs a dataset-wide cleaning action based on the specified action_type.
-    This task modifies the dataset file in place.
-    """
     try:
         if not os.path.exists(file_path):
             return {"status": "FAILURE", "error": "File not found."}
@@ -209,9 +386,6 @@ def perform_dataset_cleaning_task(file_path: str, action_type: str):
         return {"status": "FAILURE", "error": str(e)}
     
 def perform_imputation(df: pd.DataFrame, column_name: str, method: str, value=None) -> dict:
-    """
-    Performs data imputation on a specific column and returns a summary of the action.
-    """
     if column_name not in df.columns:
         raise ValueError(f"Column '{column_name}' not found.")
 

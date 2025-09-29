@@ -4,7 +4,7 @@ import Papa from 'papaparse';
 import { useDatasets } from '../context/DatasetContext';
 import { toast } from 'react-toastify';
 import { FaFileCsv, FaChartBar } from "react-icons/fa";
-import { FiChevronDown, FiUpload, FiTool } from "react-icons/fi";
+import { FiChevronDown, FiUpload, FiTool, FiCpu } from "react-icons/fi";
 import InsightsSidebar from '../components/InsightsSidebar';
 import StatisticsSidebar from '../components/StatisticsSidebar';
 import '../styles/DataTablePage.css';
@@ -53,17 +53,34 @@ const DataTablePage = () => {
     const [error, setError] = useState('');
     const [theme, setTheme] = useState('ag-theme-alpine');
     
+    // --- Existing states for statistics
     const [datasetMetrics, setDatasetMetrics] = useState(null);
     const [areMetricsLoading, setAreMetricsLoading] = useState(true);
 
+    // --- New states for Co-pilot Diagnostic Report
+    const [diagnosticReport, setDiagnosticReport] = useState(null);
+    const [isReportLoading, setIsReportLoading] = useState(false);
+
+    // --- Sidebar management
+    const [statsSidebarState, setStatsSidebarState] = useState('closed'); // 'open' or 'closed'
+    const [sidebarMode, setSidebarMode] = useState('statistics'); // 'statistics' or 'copilot'
+    
+    // --- Co-pilot simulation controls
+    const [goal, setGoal] = useState('stable_forecasting');
+    const [targetVariable, setTargetVariable] = useState('');
+
     const metricsPollingRef = useRef(null);
+    const diagnosticPollingRef = useRef(null);
     const insightsPollingRef = useRef(null);
     const [insightsSidebarState, setInsightsSidebarState] = useState('closed');
     const [sidebarColumn, setSidebarColumn] = useState(null);
     const [aiAnalysis, setAiAnalysis] = useState(null);
     const [isInsightsLoading, setIsInsightsLoading] = useState(false);
-    const [statsSidebarState, setStatsSidebarState] = useState('closed');
 
+    const [treatmentPlans, setTreatmentPlans] = useState(null); 
+    const [arePlansLoading, setArePlansLoading] = useState(false);
+    const plansPollingRef = useRef(null);
+    
     const loadData = useCallback(async () => {
         if (!currentDataset) return;
         try {
@@ -115,6 +132,50 @@ const DataTablePage = () => {
         metricsPollingRef.current = setInterval(fetchData, 3000);
     }, [currentDataset]);
 
+    const fetchDiagnosticReport = useCallback(async () => {
+        if (!currentDataset) return;
+        if (diagnosticPollingRef.current) clearInterval(diagnosticPollingRef.current);
+        setIsReportLoading(true);
+
+        const fetchData = async () => {
+            try {
+                const response = await fetch(`/api/dataset/${currentDataset.name}/diagnostics`);
+                if (response.status === 202) return;
+                if (!response.ok) throw new Error('Failed to fetch diagnostic report.');
+                const data = await response.json();
+                setDiagnosticReport(data);
+                setIsReportLoading(false);
+                clearInterval(diagnosticPollingRef.current);
+            } catch (err) {
+                toast.error(err.message);
+                setIsReportLoading(false);
+                clearInterval(diagnosticPollingRef.current);
+            }
+        };
+        fetchData();
+        diagnosticPollingRef.current = setInterval(fetchData, 3000);
+    }, [currentDataset]);
+
+    const handleOpenStatistics = () => {
+        setSidebarMode('statistics');
+        setInsightsSidebarState('closed');
+        setStatsSidebarState('open');
+        // Ensure latest stats are loaded
+        if (!datasetMetrics || datasetMetrics.filename !== currentDataset?.name) {
+            fetchMetrics();
+        }
+    };
+
+    const handleOpenAdvancedCoPilot = () => {
+        setSidebarMode('copilot');
+        setInsightsSidebarState('closed');
+        setStatsSidebarState('open');
+         // Ensure latest diagnostic report is loaded
+        if (!diagnosticReport || diagnosticReport.filename !== currentDataset?.name) {
+            fetchDiagnosticReport();
+        }
+    };
+
     const forceRefreshMetrics = useCallback(() => {
         if (!currentDataset) return;
         toast.info("Refreshing dataset statistics...");
@@ -132,22 +193,75 @@ const DataTablePage = () => {
         forceRefreshMetrics();
     }, [loadData, forceRefreshMetrics]);
 
+    const handleGeneratePlans = useCallback(async () => {
+        if (!currentDataset || !targetVariable) {
+            toast.warn("Please select a dataset and target variable first.");
+            return;
+        }
+
+        if (plansPollingRef.current) clearInterval(plansPollingRef.current);
+        setArePlansLoading(true);
+        setTreatmentPlans(null); // Clear previous plans
+        const toastId = toast.loading("Submitting request to AI Co-pilot...");
+
+        try {
+            const response = await fetch(`/api/dataset/${currentDataset.name}/generate-plans`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    target_variable: targetVariable,
+                    goal: goal,
+                }),
+            });
+
+            if (!response.ok) {
+                const errData = await response.json();
+                throw new Error(errData.detail || "Failed to start plan generation job.");
+            }
+
+            const { job_id } = await response.json();
+            toast.update(toastId, { render: "Job submitted. Waiting for AI to generate plans...", type: 'info', isLoading: true });
+
+            plansPollingRef.current = setInterval(async () => {
+                const statusResponse = await fetch(`/api/analyze/status/${job_id}`);
+                const data = await statusResponse.json();
+
+                if (data.status !== 'PENDING') {
+                    clearInterval(plansPollingRef.current);
+                    setArePlansLoading(false);
+                    
+                    if (data.status === 'SUCCESS') {
+                        setTreatmentPlans(data.result);
+                        toast.update(toastId, { render: "AI Treatment Plans generated successfully!", type: 'success', isLoading: false, autoClose: 5000 });
+                        // NOTE: In the next step, we will display these plans.
+                        // For now, we can log them to see the result.
+                        console.log("Generated Plans:", data.result);
+                    } else {
+                        setTreatmentPlans(null);
+                        toast.update(toastId, { render: `Task failed: ${data.error || "An unknown error occurred."}`, type: 'error', isLoading: false, autoClose: 7000 });
+                    }
+                }
+            }, 5000); // Poll every 5 seconds for this potentially longer task
+
+        } catch (error) {
+            setArePlansLoading(false);
+            toast.update(toastId, { render: error.message, type: 'error', isLoading: false, autoClose: 7000 });
+        }
+
+    }, [currentDataset, targetVariable, goal]);
+
     const handleRunTask = useCallback(async (taskType, column) => {
         if (!currentDataset) {
             toast.error("Please select a dataset first.");
             return;
         }
 
-        const modificationTasks = [
-            'delete_column', 
-            'impute_mean', 'impute_median', 'impute_mode', 'impute_constant',
-            'standard_scale', 'minmax_scale'
-        ];
+        const modificationTasks = ['delete_column', 'impute_mean', 'impute_median', 'impute_mode', 'impute_constant'];
         let taskParams = {};
 
         if (taskType === 'impute_constant') {
             const customValue = window.prompt("Enter the value to fill missing cells with:", "");
-            if (customValue === null) { // User clicked "Cancel"
+            if (customValue === null) {
                 return;
             }
             taskParams.value = customValue;
@@ -178,11 +292,11 @@ const DataTablePage = () => {
             
             const { job_id } = await response.json();
             toast.update(toastId, { render: `Job '${taskType}' submitted.`, type: 'info', isLoading: false, autoClose: 3000 });
-            
+
             if (modificationTasks.includes(taskType)) {
                 setTimeout(() => {
-                    toast.success("Action complete! Refreshing UI...");
-                    handleActionComplete();
+                    toast.success("Action complete! Refreshing data...");
+                    loadData();
                 }, 2000); 
                 return;
             }
@@ -208,7 +322,7 @@ const DataTablePage = () => {
                 setIsInsightsLoading(false);
             }
         }
-    }, [currentDataset, handleActionComplete]);
+    }, [currentDataset, loadData]);
 
     const handleQuickAction = useCallback(async (actionType) => {
         if (!currentDataset) {
@@ -275,19 +389,6 @@ const DataTablePage = () => {
         if (!currentDataset && datasets.length > 0) setCurrentDataset(datasets[0]);
     }, [datasets, currentDataset, setCurrentDataset]);
 
-    const toggleStatsSidebar = () => {
-        const isOpening = statsSidebarState === 'closed';
-        if (isOpening) {
-            if (!datasetMetrics || datasetMetrics.filename !== currentDataset?.name) {
-                fetchMetrics();
-            }
-            setInsightsSidebarState('closed');
-            setStatsSidebarState('open');
-        } else {
-            setStatsSidebarState('closed');
-        }
-    };
-
     const handleDatasetChange = (e) => {
         const selectedFile = datasets.find(d => d.name === e.target.value);
         setCurrentDataset(selectedFile);
@@ -317,8 +418,11 @@ const DataTablePage = () => {
                     </div>
                     <div className="header-actions">
                         <QuickActions onAction={handleQuickAction} />
-                        <button className={`statistics-button ${statsSidebarState === 'open' ? 'active' : ''}`} onClick={toggleStatsSidebar}>
+                        <button className={`statistics-button ${statsSidebarState === 'open' && sidebarMode === 'statistics' ? 'active' : ''}`} onClick={handleOpenStatistics}>
                             <FaChartBar /> Statistics
+                        </button>
+                        <button className={`co-pilot-button ${statsSidebarState === 'open' && sidebarMode === 'copilot' ? 'active' : ''}`} onClick={handleOpenAdvancedCoPilot}>
+                            <FiCpu size={16}/> Co-pilot
                         </button>
                         <button className="export-button"><FiUpload /> Export</button>
                     </div>
@@ -340,6 +444,18 @@ const DataTablePage = () => {
                 isLoading={areMetricsLoading}
                 sidebarState={statsSidebarState}
                 setSidebarState={setStatsSidebarState}
+                sidebarMode={sidebarMode}
+                diagnosticReport={diagnosticReport}
+                isReportLoading={isReportLoading}
+                goal={goal}
+                setGoal={setGoal}
+                targetVariable={targetVariable}
+                setTargetVariable={setTargetVariable}
+                onGeneratePlans={handleGeneratePlans}
+                // --- Pass down new state and placeholder function ---
+                arePlansLoading={arePlansLoading}
+                treatmentPlans={treatmentPlans}
+                onRunSimulation={() => toast.info("Impact simulation will be implemented in the next step.")}
             />
             <InsightsSidebar
                 column={sidebarColumn}
