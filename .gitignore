@@ -1,5 +1,5 @@
 # Node dependencies
-frontend/node_modules/
+node_modules/
 
 # Python virtual environment & cache
 backend/venv/
