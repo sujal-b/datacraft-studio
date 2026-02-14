@@ -1,4 +1,4 @@
-# 🚀 DataCraft Studio: An AI-Powered Data Cleaning Copilot
+# 🚀 DataCraft Studio: An AI-Powered Data Cleaning Assistant
 
 ### Executive Summary
 DataCraft Studio is a full-stack data cleaning and analysis platform designed to solve a critical bottleneck in data science workflows: the time-consuming process of preparing messy data for analysis. This project documents a robust, asynchronous Python backend that ensures responsive performance regardless of dataset size. By leveraging an AI-powered diagnostic engine and a scalable task queue, the platform provides intelligent cleaning suggestions and performs data transformations efficiently, showcasing a production-grade approach to building modern data tooling.
