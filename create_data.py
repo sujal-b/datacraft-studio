@@ -1,35 +1,30 @@
-# create_data.py
 import pandas as pd
 import numpy as np
+import random
 
-# --- Create Sales Dataset ---
-sales_data = {
-    'date': pd.to_datetime(pd.date_range(start='2024-01-01', periods=100, freq='D')),
-    'customer_id': [f'CUST{i:03}' for i in range(100)],
-    'product_name': np.random.choice(['Widget A', 'Widget B', 'Gadget Pro', 'Thingamajig'], 100),
-    'quantity': np.random.randint(1, 25, size=100),
-    'unit_price': np.random.choice([29.99, 45.50, 199.99, 9.99], 100),
-    'region': np.random.choice(['North', 'South', 'East', 'West'], 100),
-    'sales_rep': np.random.choice(['John Smith', 'Jane Doe', 'Mike Johnson', 'Emily White'], 100)
-}
-sales_df = pd.DataFrame(sales_data)
-sales_df['total_amount'] = sales_df['quantity'] * sales_df['unit_price']
+# 1. Create a base dataset
+rows = 1000
+df = pd.DataFrame()
 
-# Save to the public folder so the app can fetch it
-sales_df.to_csv('./public/sales_data_2024.csv', index=False)
+# TARGET: The thing we want to predict (0 or 1)
+df['churned'] = np.random.choice([0, 1], size=rows)
 
+# LEAKAGE TYPE 1: The "Perfect Predictor" (100% Correlation)
+# e.g., A column that records the termination date (only exists if they churned)
+df['termination_status'] = df['churned'].apply(lambda x: 'Terminated' if x == 1 else 'Active')
 
-# --- Create Inventory Dataset ---
-inventory_data = {
-    'product_id': [f'PROD{i:04}' for i in range(50)],
-    'product_name': np.random.choice(['Widget A', 'Widget B', 'Gadget Pro', 'Thingamajig', 'Doohickey'], 50),
-    'stock_level': np.random.randint(0, 500, size=50),
-    'warehouse_location': np.random.choice(['WH-A', 'WH-B', 'WH-C'], 50),
-    'last_restock_date': pd.to_datetime(pd.date_range(start='2024-05-01', periods=50, freq='D')),
-}
-inventory_df = pd.DataFrame(inventory_data)
+# LEAKAGE TYPE 2: The "Subtle Leaker" (98% Correlation)
+# e.g., A billing flag that almost always matches the target
+df['billing_issue_flag'] = df['churned'] * 0.98 + np.random.normal(0, 0.01, rows)
 
-# Save to the public folder
-inventory_df.to_csv('./public/inventory_data_2024.csv', index=False)
+# LEAKAGE TYPE 3: High Cardinality ID (The "Overfitting" Trap)
+# Unique IDs that the model might memorize
+df['customer_transaction_id'] = [f"TXN_{i}_{random.randint(1000,9999)}" for i in range(rows)]
 
-print("✅ Sample datasets created successfully in the 'public' folder.")
+# Add some noise (normal columns)
+df['age'] = np.random.randint(18, 80, rows)
+df['balance'] = np.random.uniform(1000, 50000, rows)
+
+# Save
+df.to_csv('leakage_stress_test.csv', index=False)
+print("Created 'leakage_stress_test.csv'. Upload this to DataCraft!")
