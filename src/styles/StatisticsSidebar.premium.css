@@ -1,5 +1,5 @@
 .statistics-sidebar {
-    width: 420px;
+    width: 435px;
     background-color: #FFFFFF;
     color: #334155;
     border-left: 1px solid #E2E8F0;
@@ -271,4 +271,85 @@
   background: #4338CA;
   transform: translateY(-2px);
   box-shadow: 0 6px 20px 0 rgba(76, 110, 245, 0.45);
+}
+
+.simulation-results-container h4 {
+  font-size: 1.1rem;
+  font-weight: 600;
+  color: #1E293B;
+  margin: 0 0 8px 0;
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.plan-card .rank-badge {
+    position: absolute;
+    top: 12px;
+    right: 16px;
+    background-color: #F1F5F9;
+    color: #475569;
+    border-radius: 99px;
+    font-size: 0.7rem;
+    font-weight: 600;
+    padding: 3px 8px;
+}
+
+.plan-card.rank-1 .rank-badge {
+    background-color: #ECFDF5;
+    color: #065F46;
+    border: 1px solid #A7F3D0;
+}
+
+.plan-header .impact-string {
+    margin: 4px 0 0 0;
+    font-size: 0.85rem;
+    color: #64748B;
+}
+
+.plan-header .impact-string.positive {
+    color: #15803D; /* Darker Green */
+}
+
+.plan-header .impact-string.negative {
+    color: hsl(0, 51%, 53%); /* Darker Red */
+}
+
+.apply-plan-btn {
+    width: 100%;
+    margin-top: 12px;
+    padding: 8px;
+    border: none;
+    border-radius: 6px;
+    cursor: pointer;
+    font-weight: 600;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    transition: all 0.2s;
+}
+
+.apply-plan-btn.primary {
+    background-color: #2563eb;
+    color: white;
+}
+
+.apply-plan-btn.primary:hover {
+    background-color: #1d4ed8;
+}
+
+.apply-plan-btn.secondary {
+    background-color: #f3f4f6;
+    color: #4b5563;
+    border: 1px solid #e5e7eb;
+}
+
+.apply-plan-btn.secondary:hover {
+    background-color: #e5e7eb;
+}
+
+.plan-card.best-plan {
+    border: 2px solid #2563eb;
+    background-color: #eff6ff;
 }

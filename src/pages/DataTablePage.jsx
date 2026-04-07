@@ -80,6 +80,13 @@ const DataTablePage = () => {
     const [treatmentPlans, setTreatmentPlans] = useState(null); 
     const [arePlansLoading, setArePlansLoading] = useState(false);
     const plansPollingRef = useRef(null);
+
+    const [simulationResults, setSimulationResults] = useState(null);
+    const [isSimulating, setIsSimulating] = useState(false);
+    const simulationPollingRef = useRef(null);
+    const [simulationWarnings, setSimulationWarnings] = useState([]);
+
+    const [isApplyingPlan, setIsApplyingPlan] = useState(false);
     
     const loadData = useCallback(async () => {
         if (!currentDataset) return;
@@ -324,6 +331,72 @@ const DataTablePage = () => {
         }
     }, [currentDataset, loadData]);
 
+    const handleApplyPlan = useCallback(async (plan) => {
+        if (!currentDataset) return;
+        
+        if (!window.confirm(`Are you sure you want to apply "${plan.name}"? This will permanently modify the dataset.`)) {
+            return;
+        }
+
+        setIsApplyingPlan(true);
+        const toastId = toast.loading("Applying plan strategies to dataset...");
+
+        try {
+            // This matches the endpoint we added to main.py
+            const response = await fetch(`/api/dataset/${currentDataset.name}/apply-plan`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    python_code: plan.python_code, // The hidden field we added to the AI JSON
+                    plan_name: plan.name
+                }),
+            });
+
+            if (!response.ok) {
+                const err = await response.json();
+                throw new Error(err.detail || "Failed to apply plan.");
+            }
+
+            const result = await response.json();
+            
+            // Wait for the background task if it's async, or if it returns immediately:
+            // (Our backend endpoint returns a job_id, so we technically should poll, 
+            // but for simplicity, let's assume the user waits or we do a quick timeout 
+            // since the endpoint you added earlier returns a job_id).
+            
+            // IF YOUR ENDPOINT RETURNS A JOB_ID (Async way):
+            // We should poll similar to generate-plans. 
+            // Let's do a quick polling implementation here for robustness.
+            
+            const jobId = result.job_id;
+            const pollInterval = setInterval(async () => {
+                const statusRes = await fetch(`/api/analyze/status/${jobId}`);
+                const statusData = await statusRes.json();
+                
+                if (statusData.status !== 'PENDING') {
+                    clearInterval(pollInterval);
+                    setIsApplyingPlan(false);
+                    
+                    if (statusData.status === 'SUCCESS') {
+                         toast.update(toastId, { render: "Plan applied successfully! Reloading data...", type: 'success', isLoading: false, autoClose: 3000 });
+                         
+                         // Refresh everything
+                         handleActionComplete(); 
+                         // Reset simulation state so user goes back to start or sees updated stats
+                         setTreatmentPlans(null); 
+                         setSimulationResults(null);
+                    } else {
+                        toast.update(toastId, { render: `Application failed: ${statusData.error}`, type: 'error', isLoading: false, autoClose: 5000 });
+                    }
+                }
+            }, 2000);
+
+        } catch (error) {
+            setIsApplyingPlan(false);
+            toast.update(toastId, { render: error.message, type: 'error', isLoading: false, autoClose: 5000 });
+        }
+    }, [currentDataset, handleActionComplete]);
+
     const handleQuickAction = useCallback(async (actionType) => {
         if (!currentDataset) {
             toast.warn("Please select a dataset first.");
@@ -362,6 +435,54 @@ const DataTablePage = () => {
             toast.update(toastId, { render: error.message, type: "error", isLoading: false, autoClose: 5000 });
         }
     }, [currentDataset, handleActionComplete]);
+
+    const handleRunSimulation = useCallback(async () => {
+        if (!currentDataset || !treatmentPlans) return;
+
+        if (simulationPollingRef.current) clearInterval(simulationPollingRef.current);
+        setIsSimulating(true);
+        setSimulationResults(null);
+        const toastId = toast.loading("Starting impact simulation... This may take a few minutes.");
+
+        try {
+            const response = await fetch(`/api/dataset/${currentDataset.name}/run-simulation`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    plans: treatmentPlans,
+                    target_variable: targetVariable,
+                    goal: goal === 'stable_forecasting' ? 'regression' : 'classification', // Example mapping
+                }),
+            });
+            if (!response.ok) throw new Error((await response.json()).detail || 'Failed to start simulation.');
+
+            const { job_id } = await response.json();
+            toast.update(toastId, { render: "Simulation running. Validating plans against probe models...", isLoading: true });
+
+            simulationPollingRef.current = setInterval(async () => {
+                const statusResponse = await fetch(`/api/analyze/status/${job_id}`);
+                const data = await statusResponse.json();
+
+                if (data.status !== 'PENDING') {
+                    clearInterval(simulationPollingRef.current);
+                    setIsSimulating(false); // <--- THIS MUST BE HERE TO STOP SPINNER
+                    
+                    if (data.status === 'SUCCESS') {
+                        setSimulationResults(data.result);
+                        setSimulationWarnings(data.warnings || []);
+                        toast.update(toastId, { render: "Simulation complete!", type: 'success', isLoading: false, autoClose: 5000 });
+                    } else {
+                        // It failed
+                        toast.update(toastId, { render: `Simulation failed: ${data.error}`, type: 'error', isLoading: false, autoClose: 7000 });
+                    }
+                }
+            }, 5000);
+
+        } catch (error) {
+            setIsSimulating(false);
+            toast.update(toastId, { render: error.message, type: "error", isLoading: false, autoClose: 7000 });
+        }
+    }, [currentDataset, treatmentPlans, targetVariable, goal]);
 
     const columnDefs = useMemo(() => {
         if (!datasetMetrics?.columnStats) return [];
@@ -455,7 +576,12 @@ const DataTablePage = () => {
                 // --- Pass down new state and placeholder function ---
                 arePlansLoading={arePlansLoading}
                 treatmentPlans={treatmentPlans}
-                onRunSimulation={() => toast.info("Impact simulation will be implemented in the next step.")}
+                onRunSimulation={handleRunSimulation}
+                isSimulating={isSimulating}
+                simulationResults={simulationResults}
+                simulationWarnings={simulationWarnings}
+                onApplyPlan={handleApplyPlan}
+                isApplying={isApplyingPlan}
             />
             <InsightsSidebar
                 column={sidebarColumn}
