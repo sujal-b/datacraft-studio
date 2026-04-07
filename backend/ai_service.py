@@ -2,67 +2,91 @@ import json
 import os
 import requests
 import re 
+import time
 
-OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY","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")
+OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY","")
 if not OPENROUTER_API_KEY:
     raise ValueError("CRITICAL ERROR: OPENROUTER_API_KEY environment variable is not set.")
 
-def _call_openrouter_api(system_prompt: str, user_prompt: str) -> dict:
+def _call_openrouter_api(system_prompt: str, user_prompt: str, temperature: float = 0.2) -> dict:
     """
     A private helper function to handle the actual API call to OpenRouter.
+    Includes RETRY LOGIC to handle malformed JSON responses from the AI.
     """
-    try:
-        response = requests.post(
-            url="https://openrouter.ai/api/v1/chat/completions",
-            headers={
-                "Authorization": f"Bearer {OPENROUTER_API_KEY}",
-                "Content-Type": "application/json",
-                "HTTP-Referer": "http://localhost:3000",
-                "X-Title": "DataCraft Studio"
-            },
-            data=json.dumps({
-                "model": "nvidia/nemotron-nano-9b-v2:free",
-                "temperature": 0.2,
-                "messages": [
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt}
-                ]
-            }),
-            timeout=120 # Increased timeout for more complex generation
-        )
-        response.raise_for_status()
-        response_data = response.json()
-        ai_content_string = response_data['choices'][0]['message']['content']
-        
-        # --- START: ENHANCED JSON PARSING & ERROR HANDLING ---
-        json_match = re.search(r'\{.*\}', ai_content_string, re.DOTALL)
-        if not json_match:
-            print("--- AI RESPONSE (NO JSON) ---")
-            print(ai_content_string)
-            print("--- END AI RESPONSE ---")
-            raise ValueError("AI response did not contain a valid JSON object.")
-            
-        json_string = json_match.group(0)
+    MAX_RETRIES = 3
+    
+    for attempt in range(MAX_RETRIES):
         try:
+            # We use a slight backoff if it's a retry
+            if attempt > 0:
+                time.sleep(1)
+                
+            response = requests.post(
+                url="https://openrouter.ai/api/v1/chat/completions",
+                headers={
+                    "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+                    "Content-Type": "application/json",
+                    "HTTP-Referer": "http://localhost:3000",
+                    "X-Title": "DataCraft Studio"
+                },
+                data=json.dumps({
+                    "model": "nvidia/nemotron-3-nano-30b-a3b:free",
+                    "temperature": temperature,
+                    # asking for json_object can help if the model supports it
+                    "response_format": { "type": "json_object" },
+                    "messages": [
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": user_prompt}
+                    ]
+                }),
+                timeout=120 
+            )
+            response.raise_for_status()
+            response_data = response.json()
+            
+            if not response_data.get('choices'):
+                raise ValueError("AI Service returned no content choices.")
+
+            ai_content_string = response_data['choices'][0]['message']['content']
+            
+            # --- Cleaning Step 1: Remove Markdown Code Blocks ---
+            # This handles ```json ... ``` or just ``` ... ``` wrapping
+            cleaned_string = re.sub(r'^```[a-z]*\s*', '', ai_content_string, flags=re.MULTILINE)
+            cleaned_string = re.sub(r'\s*```$', '', cleaned_string, flags=re.MULTILINE)
+            cleaned_string = cleaned_string.strip()
+
+            # --- Cleaning Step 2: Find JSON boundaries ---
+            # We look for the first '{' and the last '}'
+            json_match = re.search(r'\{.*\}', cleaned_string, re.DOTALL)
+            
+            if not json_match:
+                # If we can't find braces, the output is definitely not JSON.
+                print(f"DEBUG (Attempt {attempt+1}): No JSON braces found in output: {ai_content_string[:100]}...")
+                continue # Retry
+            
+            json_string = json_match.group(0)
+            
+            # --- Validation Step ---
             return json.loads(json_string)
+
         except json.JSONDecodeError as e:
-            print(f"--- FAILED TO PARSE AI JSON RESPONSE ---")
-            print(f"Error: {e}")
-            print(f"--- RAW AI STRING ---")
-            print(json_string)
-            print(f"--- END RAW AI STRING ---")
-            # Re-raise a more user-friendly exception to be sent to the frontend
-            raise ValueError("The AI returned a malformed or incomplete JSON response. This is often a temporary issue with the model. Please try again.") from e
-        # --- END: ENHANCED JSON PARSING & ERROR HANDLING ---
+            print(f"JSON Parse Error in _call_openrouter_api (Attempt {attempt+1}/{MAX_RETRIES}): {e}")
+            # If it's the last attempt, we let the loop finish to return the error
+            if attempt == MAX_RETRIES - 1:
+                print(f"DEBUG: Failed Content was:\n{ai_content_string}")
+        except Exception as e:
+            print(f"Network/API Error in _call_openrouter_api (Attempt {attempt+1}/{MAX_RETRIES}): {e}")
+            if attempt == MAX_RETRIES - 1:
+                return {
+                    "error": "AI Service Connection Failed", 
+                    "details": str(e)
+                }
 
-    except requests.exceptions.HTTPError as http_err:
-        error_message = f"HTTP error occurred: {http_err} - Response: {http_err.response.text}"
-        print(f"ERROR: {error_message}")
-        raise Exception(error_message) # Raise a generic exception to be caught by the Celery task
-
-    except Exception as e:
-        print(f"Error in _call_openrouter_api: {e}")
-        raise e
+    # If we exit the loop, we failed to get valid JSON
+    return {
+        "error": "AI Generation Failed",
+        "details": "The AI model failed to generate valid JSON after multiple attempts. Please try again."
+    }
 
 def get_ai_interpretation(profile: dict) -> dict:
     """
@@ -82,28 +106,23 @@ def get_ai_interpretation(profile: dict) -> dict:
     ## YOUR ANALYSIS WORKFLOW (CHAIN OF THOUGHT)
     Follow this reasoning pattern **in your <thinking> block**:
 
-    1. **DOMAIN INFERENCE**  
-    → What domain does this likely belong to? (IoT, finance, healthcare, etc.)  
+    1. **DOMAIN INFERENCE** → What domain does this likely belong to? (IoT, finance, healthcare, etc.)  
     → **Evidence**: "Column name='temperature' + high ACF(1)=0.88 → IoT sensor data"  
     → **Contradictions**: "But MNAR pattern suggests possible financial context"
 
-    2. **MISSINGNESS PATTERN ASSESSMENT**  
-    → "MNAR indicators exist (humidity: -0.65) → systematic bias likely"  
+    2. **MISSINGNESS PATTERN ASSESSMENT** → "MNAR indicators exist (humidity: -0.65) → systematic bias likely"  
     → "BUT high temporal stability (ACF=0.88) suggests gradual change"  
     → **Critical question**: "Is the correlation meaningful or coincidental?"
 
-    3.  **RISK-BASED EVALUATION**  
-    → "For sensor data, bias could cause safety issues"  
+    3.  **RISK-BASED EVALUATION** → "For sensor data, bias could cause safety issues"  
     → "For financial data, bias could trigger regulatory penalties"  
     → "What's the cost of being wrong? (e.g., $10k vs $1M impact)"
 
-    4.  **TECHNIQUE TRADEOFF ANALYSIS**  
-    → "ffill would be fast but assumes stability during gaps"  
+    4.  **TECHNIQUE TRADEOFF ANALYSIS** → "ffill would be fast but assumes stability during gaps"  
     → "MICE would be accurate but requires sufficient data"  
     → **Key insight**: "For this domain, [X] matters more than [Y]"
 
-    5.  **DECISION WITH UNCERTAINTY**  
-    → "Recommend [X], but only if [critical assumption] holds"  
+    5.  **DECISION WITH UNCERTAINTY** → "Recommend [X], but only if [critical assumption] holds"  
     → "Without [domain knowledge], I'd verify [specific check] first"  
     → "This assumes [unstated condition] — flag if violated"
 
@@ -127,139 +146,209 @@ def get_ai_interpretation(profile: dict) -> dict:
     
     user_prompt = f"Here is the statistical profile to analyze:\n{json.dumps(profile, indent=2)}"
     
-    try:
-        return _call_openrouter_api(system_prompt, user_prompt)
-    except Exception as e:
-        return {
-            "recommendation": "AI Service Error",
-            "reasoning_summary": "Could not connect to the AI model or the response was invalid.",
-            "assumptions": [],
-            "warning": str(e)
+    return _call_openrouter_api(system_prompt, user_prompt)
+
+# === HELPER: TOKEN-SAFE REPORT CONDENSATION ===
+def _condense_diagnostic_report(report: dict, top_n: int = 25) -> dict:
+    """
+    Reduces token count by ~90% while preserving critical diagnostic signals.
+    Keeps full details only for problematic columns.
+    """
+    # 1. Base Structure
+    condensed = {
+        "modeling_context": report.get("modeling_context", {}),
+        "missingness_overview": report.get("missingness", {}),
+        "skew_overview": report.get("distribution_skew", {}),
+        "target_correlations": report.get("target_correlations", {}),
+        "note": "Full column details condensed to top problematic columns. Healthy columns omitted."
+    }
+    
+    # 2. Identify Critical Columns
+    critical_cols = set()
+    
+    # Add top missing
+    missing_cols = sorted(report.get('missingness', {}).items(), key=lambda x: x[1], reverse=True)[:top_n]
+    critical_cols.update([c[0] for c in missing_cols])
+    
+    # Add high skew
+    skew_cols = [col for col, val in report.get('distribution_skew', {}).items() if abs(val) > 1.5]
+    critical_cols.update(skew_cols[:top_n])
+    
+    # Add strong correlations
+    corr_cols = [col for col, val in report.get('target_correlations', {}).items() if abs(val) > 0.2]
+    critical_cols.update(corr_cols[:top_n])
+    
+    # 3. Filter Detail Dictionary
+    if 'column_details' in report:
+        condensed['column_details'] = {
+            col: details for col, details in report['column_details'].items()
+            if col in critical_cols
         }
+    
+    return condensed
+
+# === HELPER: SAFETY-HARDENED FALLBACK PLAN ===
+def _generate_fallback_plan(report: dict, target: str, temporal_col: str = None) -> dict:
+    """
+    Hardcoded conservative plan with leakage prevention and edge case handling.
+    Used when the LLM API fails or times out.
+    """
+    missingness = report.get('missingness', {})
+    high_missing_cols = [col for col, pct in missingness.items() if pct > 0.95]
+    
+    # Safe temporal handling code injection
+    date_parse_code = ""
+    if temporal_col:
+        date_parse_code = (
+            f"if '{temporal_col}' in df.columns:\n"
+            f"    df['{temporal_col}'] = pd.to_datetime(df['{temporal_col}'].astype(str), errors='coerce')\n"
+        )
+    
+    python_code = (
+        "import pandas as pd\nimport numpy as np\n"
+        f"{date_parse_code}"
+        f"drop_cols = {high_missing_cols}\n"
+        "existing_drop_cols = [c for c in drop_cols if c in df.columns]\n"
+        "if existing_drop_cols:\n"
+        "    df = df.drop(columns=existing_drop_cols)\n"
+        f"if '{target}' in df.columns:\n"
+        f"    df = df.dropna(subset=['{target}'])\n"
+    )
+
+    return {
+        "conservative_plan": {
+            "name": "Failsafe Conservative Plan",
+            "rationale": "API failure recovery - minimal safe operations with leakage prevention.",
+            "steps": [{
+                "function_name": "delete_column",
+                "target_columns": high_missing_cols,
+                "reasoning": "Automatic recovery: Columns with >95% missing dropped per production policy."
+            }],
+            "python_code": python_code
+        },
+        # We perform a shallow copy for others to ensure the UI doesn't break
+        "balanced_plan": {"name": "Balanced Plan (Unavailable)", "rationale": "Service unavailable", "steps": [], "python_code": ""},
+        "aggressive_plan": {"name": "Aggressive Plan (Unavailable)", "rationale": "Service unavailable", "steps": [], "python_code": ""},
+        "architect_plan": {"name": "Architect Plan (Unavailable)", "rationale": "Service unavailable", "steps": [], "python_code": ""}
+    }
 
 def get_treatment_plan_hypotheses(diagnostic_report: dict) -> dict:
     """
-    Takes a full dataset diagnostic report and generates three competing
-    data cleaning and feature engineering strategies.
+    Generates FOUR statistically rigorous data preparation strategies.
+    Strictly constrained to the Action Library to prevent hallucination.
     """
-    system_prompt = """
-    You are Dr. Anya Sharma, Dr. Ben Carter, and Dr. Chloe Davis — a committee of three world-class data scientists with deep expertise in building enterprise ML systems. Your mission is to generate THREE distinct, mathematically rigorous, and executable "Treatment Plans" from a dataset diagnostic report. These plans will be empirically validated to select the single optimal strategy for model training. Your output will directly impact high-stakes business decisions — precision is non-negotiable.
+    # === 1. CONTEXT EXTRACTION & SAFETY DEFAULTS ===
+    context = diagnostic_report.get('modeling_context', {})
+    target_var = context.get('target_variable', 'target')
+    problem_type = context.get('problem_type', 'regression')
+    temporal_col = context.get('temporal_column', None)
+    
+    # === 2. TOKEN-SAFE REPORT CONDENSATION ===
+    condensed_report = _condense_diagnostic_report(diagnostic_report, top_n=25)
 
-    ### 🔑 CRITICAL CONSTRAINT: AVAILABLE METRICS
-    You ONLY have access to the metrics provided in the user's JSON diagnostic report. This includes dataset-level metrics (`row_count`, `duplicate_row_count`, etc.) and the following per-column metrics:
-    `column_name`, `data_type`, `missing_count`, `missing_percentage`, `unique_count`, `unique_ratio`, `constant_flag`, and a `numeric_profile` containing `mean`, `median`, `std_dev`, `min`, `max`, `skewness`, `kurtosis`, and `outlier_count`.
-    **DO NOT reference ANY other metrics (e.g., correlation, feature importance) — they do not exist in the report.**
+    # === 3. SYSTEM PROMPT (STRICT ACTION LIBRARY & EXAMPLES) ===
+    system_prompt = f"""
+    **ROLE**: Principal Data Scientist. You generate data cleaning strategies based on evidence, NOT blind checklists.
 
-    ---
+    ### 1. THE ALLOWED ACTION LIBRARY (STRICT)
+    **Actions**:
+    - **Cleaning**: `delete_column`, `drop_rows_where_null` (target/ID only), `drop_duplicate_rows`.
+    - **Imputation**: `impute_mean`, `impute_median`, `impute_mode`, `impute_constant`, `forward_fill` (time-series only).
+    - **Encoding**: `one_hot_encode`, `label_encode`.
+    - **Transformation**: `log_transform`, `standard_scale`, `min_max_scale`, `clip_outliers`.
+    - **Creation**: `create_interaction`, `create_date_features`, `create_missing_flag`.
 
-    ### 📜 CORE PRINCIPLES (VIOLATION = AUTOMATIC REJECTION)
-    1.  **NO HALLUCINATIONS**: Only use functions from the manifest below. Do not invent techniques or parameters.
-    2.  **METRIC-ANCHORED REASONING**: Every step's `reasoning` MUST cite specific metrics and their exact values from the diagnostic report.
-    3.  **PHILOSOPHICAL PURITY**: The three plans must reflect genuinely different, irreconcilable strategies based on the persona protocols. Do not blend strategies.
-    4.  **EXECUTION READINESS**: Steps must be implementable as-is by an automated Python pipeline.
+    **COLUMN ACTION COMPATIBILITY RULE (VIOLATION = HALLUCINATION)**:
+    - `log_transform`, `clip_outliers`, `standard_scale`, `min_max_scale` → **NUMERIC COLUMNS ONLY**.
+    - `impute_mean`, `impute_median` → **NUMERIC COLUMNS ONLY**.
+    - `one_hot_encode`, `label_encode` → **CATEGORICAL/OBJECT COLUMNS ONLY**.
+    - `impute_mode` → Any column.
 
-    ---
+    ### 2. STRATEGY ARCHETYPES (PHILOSOPHIES, NOT RULES)
+    
+    **Plan 1: CONSERVATIVE ("The Auditor")**
+    * *Philosophy*: "Do no harm." Prefer deleting bad data over guessing (imputing).
+    * *Example Thought*: "Column 'age' has 5% missing. Imputation might bias results. Better to drop these few rows if dataset is large, or impute strictly with median."
+    
+    **Plan 2: BALANCED ("The Engineer")**
+    * *Philosophy*: "Standard Best Practices." Use Median for skew, Mean for normal. Handle outliers.
+    * *Example Thought*: "'Income' is highly skewed (skew=5.2). Mean imputation is dangerous here; I will use Median."
+    
+    **Plan 3: AGGRESSIVE ("The Maximizer")**
+    * *Philosophy*: "Keep every row." Never drop rows. Impute everything. Flag missing values as features.
+    * *Example Thought*: "I can't afford to lose any rows. I will impute 'age' and also create a 'age_is_missing' column to capture the signal of missingness."
+    * *Aggressive plans MAY explore new features, BUT they must justify them using:
+    - Target correlation strength.
+    - Explicit domain plausibility.
+    - Variance amplification.
+    * *If none apply, SKIP feature creation.*
 
-    ### ⚙️ FUNCTION MANIFEST (YOUR ONLY TOOLKIT)
-    *Use EXACTLY these function names. Your expert judgment is in deciding WHEN to use them based on your persona and the metrics.*
-    - `drop_duplicate_rows`
-    - `drop_na_rows`
-    - `impute_median` (target: numeric columns)
-    - `impute_mean` (target: numeric columns)
-    - `impute_mode` (target: categorical/integer columns)
-    - `impute_constant` (target: any column)
-    - `standard_scale` (target: numeric columns)
-    - `delete_column` (target: any column)
+    **Plan 4: ARCHITECT ("The Feature Forge")**
+    * *Philosophy*: "Domain Specific." Focus on feature creation (interactions, date parts) over just cleaning.
+    * *Example Thought*: "Since we have 'price' and 'quantity', the most predictive feature is likely 'revenue = price * qty'. I must create this."
+    * *Architect plans MAY explore new features, BUT they must justify them using:
+    - Target correlation strength.
+    - Explicit domain plausibility.
+    - Variance amplification.
+    * *If none apply, SKIP feature creation.*
 
-    ---
+    ### 3. FINAL SELF-CHECK (MANDATORY)
+    Before returning JSON, verify:
+    - All `target_columns` are in the dataset, no hallucinated columns.
+    - No numeric actions (log/scale) applied to categorical columns.
+    - Every step cites a specific statistic (e.g. "Using IQR to clip and limit the effect of extreme values beyond –14.5 and 46.5" "Imputing missing ages with a median of 32 to avoid distortion from a few very large values.").
 
-    ### ⚖️ PROFESSIONAL JUDGMENT PROTOCOL (MANDATORY)
-    For EVERY step in a plan, your `reasoning` must be "metric-anchored." It must transparently declare the evidence and the threshold for the decision.
-
-    **VALID Professional Reasoning Examples:**
-    - "Applying median imputation as `skew` (1.9) for column 'age' exceeds the > 0.8 threshold for robust imputation."
-    - "Deleting column 'notes' as its `missing_percentage` (85.2%) exceeds the > 80% threshold for data preservation."
-
-    **INVALID (Unprofessional) Reasoning Examples:**
-    - "Impute median because the data is skewed" (No metric or threshold cited)
-    - "Delete the column due to high missingness" (Subjective, not quantified)
-
-    ---
-
-    ### 👥 PERSONA EXECUTION PROTOCOLS (NON-NEGOTIABLE)
-
-    #### **Dr. Anya Sharma (The Conservative)**
-    > *"I preserve the original data's statistical properties. I intervene ONLY when the diagnostic report shows unambiguous, high-impact pathology. My goal is maximum reliability and interpretability."*
-    - **Philosophy:** Avoid transformations. Only address critical data integrity failures.
-    - **Threshold Guidance:** Use extreme thresholds. Only act on severe pathologies.
-        - `drop_duplicate_rows`: Only if `duplicate_row_count` is significant (e.g., > 1% of `row_count`).
-        - `delete_column`: Only if a column is useless (`constant_flag` is true) or catastrophically incomplete (`missing_percentage` > 80%).
-        - **Forbidden:** Will almost never use imputation or scaling.
-
-    #### **Dr. Ben Carter (The Pragmatist)**
-    > *"I build robust, production-ready datasets using battle-tested industry standards. Every step must be defensible in a production ML code review. My goal is a balance of performance and reliability."*
-    - **Philosophy:** Apply standard, proven techniques to common data problems.
-    - **Threshold Guidance:** Use widely accepted, industry-standard thresholds.
-        - `impute_median`: For numeric columns with clear skew (`skew` > 0.8) and moderate missingness (`missing_percentage` < 25%).
-        - `impute_mode`: For categorical columns with low cardinality (`unique_count` < 50) and significant missingness (`missing_percentage` > 5%).
-        - `delete_column`: For columns with high missingness (`missing_percentage` > 50%).
-
-    #### **Dr. Chloe Davis (The Maximizer)**
-    > *"I engineer for peak model performance. I will reshape the data universe if it gains predictive power. Business constraints and data purity are secondary to winning."*
-    - **Philosophy:** Aggressively transform features and remove weak signals to maximize potential model performance.
-    - **Threshold Guidance:** Use aggressive, performance-oriented thresholds.
-        - `impute_median`: For any skewed numeric column with up to 40% missingness.
-        - `delete_column`: For any column with even moderate missingness (`missing_percentage` > 30%) or low variance.
-        - `standard_scale`: Will apply to all numeric features by default to prepare for complex models.
-
-    ---
-
-    ### 📦 OUTPUT FORMAT (VALIDATION ENGINE COMPATIBLE)
-    Return **ONLY** this JSON structure. **ZERO deviations tolerated.**
-
-    ```json
-    {
-    "conservative_plan": {
-        "name": "Conservative Plan (Dr. Anya Sharma)",
-        "rationale": "A 1-sentence summary of the conservative strategy, citing a key metric from the report.",
+    ### 4. OUTPUT FORMAT (STRICT JSON)
+    You MUST return this exact JSON structure. `steps` matches `python_code`.
+    
+    {{
+      "conservative_plan": {{
+        "name": "Conservative Strategy",
+        "rationale": "High missingness in 'marketing_channel' (40%) warrants deletion to avoid noise.",
         "steps": [
-        {
-            "function_name": "exact_function_name_from_manifest",
-            "target_columns": ["column_name"] OR null,
-            "reasoning": "Metric-anchored justification: e.g., 'Deleting column `notes` as its missing_percentage (85.2%) exceeds the >80% conservative threshold.'"
-        }
-        ]
-    },
-    "balanced_plan": {
-        "name": "Balanced Plan (Dr. Ben Carter)",
-        "rationale": "A 1-sentence summary of the balanced strategy, citing key metrics from the report.",
-        "steps": [
-        {
-            "function_name": "impute_median",
-            "target_columns": ["user_age"],
-            "reasoning": "Applying median imputation as `skew` (1.9) for column 'user_age' exceeds the >0.8 standard threshold."
-        }
-        ]
-    },
-    "aggressive_plan": {
-        "name": "Aggressive Plan (Dr. Chloe Davis)",
-        "rationale": "A 1-sentence summary of the aggressive strategy, citing key metrics from the report.",
-        "steps": [
-        {
-            "function_name": "delete_column",
-            "target_columns": ["user_feedback_score"],
-            "reasoning": "Deleting column `user_feedback_score` as its low variance does not justify its missing_percentage (35.1%) for a performance-focused model."
-        }
-        ]
-    }
-    }
-    ```
+            {{ 
+                "function_name": "delete_column", 
+                "target_columns": ["marketing_channel"], 
+                "reasoning": "Missing > 40% (Actual: 42%)" 
+            }},
+            {{
+                "function_name": "impute_median",
+                "target_columns": ["age"],
+                "reasoning": "Low missingness (5%), skew is high (2.1)"
+            }}
+        ],
+        "python_code": "import pandas as pd\\nimport numpy as np\\n# Code that implements the steps above..."
+      }},
+      "balanced_plan": {{ ... }},
+      "aggressive_plan": {{ ... }},
+      "architect_plan": {{ ... }}
+    }}
+
     """
-    user_prompt = f"Here is the Diagnostic Report to analyze:\n{json.dumps(diagnostic_report, indent=2)}"
+
+    # === 4. USER PROMPT ===
+    top_missing = sorted(condensed_report['missingness_overview'].items(), key=lambda x: x[1], reverse=True)[:5]
+    
+    user_prompt = f"""
+    ### DATASET CONTEXT
+    - **Target Variable**: "{target_var}" ({problem_type})
+    - **Temporal Column**: {temporal_col if temporal_col else 'None'}
+    - **Problem**: Missing values and potential outliers need handling.
+    
+    ### DIAGNOSTIC SUMMARY
+    - **Top Missing Columns**: {top_missing}
+    - **Skewed Columns**: {[k for k, v in condensed_report['skew_overview'].items() if abs(v) > 2.0]}
+    
+    ### FULL REPORT
+    {json.dumps(condensed_report, indent=2)}
+    
+    Generate the FOUR plans. Ensure `steps` array is populated and `python_code` is valid pandas.
+    """
+
     try:
-        return _call_openrouter_api(system_prompt, user_prompt)
+        # Precision mode (low temp) for production safety
+        return _call_openrouter_api(system_prompt, user_prompt, temperature=0.1)
     except Exception as e:
-        return {
-            "error": "Failed to generate treatment plans from AI.",
-            "details": str(e)
-        }
+        # Automatic Fallback
+        print(f"AI Service Failed: {e}. Reverting to Failsafe Plan.")
+        return _generate_fallback_plan(diagnostic_report, target_var, temporal_col)

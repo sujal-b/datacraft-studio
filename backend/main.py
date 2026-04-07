@@ -6,11 +6,12 @@ import glob
 import json
 from typing import Optional, Dict, Any
 from fastapi.staticfiles import StaticFiles
-from celery_worker import celery_app as worker, generate_comprehensive_stats, generate_diagnostic_report, generate_treatment_plans_task
+from celery_worker import celery_app as worker, generate_comprehensive_stats, generate_diagnostic_report, generate_treatment_plans_task,run_impact_simulation_task ,apply_ai_plan_task
 from celery.result import AsyncResult
 from fastapi.middleware.cors import CORSMiddleware
 from redis import Redis
 from dotenv import load_dotenv
+
 
 load_dotenv()
 REDIS_HOST = os.getenv("REDIS_HOST", "localhost")
@@ -33,6 +34,10 @@ class GeneratePlansRequest(BaseModel):
     target_variable: str
     goal: str
 
+class ApplyPlanRequest(BaseModel):
+    python_code: str
+    plan_name: str
+
 class CleanRequest(BaseModel):
     dataset_name: str
     action_type: str
@@ -43,6 +48,24 @@ class TaskRequest(BaseModel):
     column_name: str
     task_type: str
     task_params: Optional[Dict[str, Any]] = None
+
+class RunSimulationRequest(BaseModel):
+    plans: Dict[str, Any]
+    target_variable: str
+    goal: str
+
+@app.post("/api/dataset/{dataset_name}/run-simulation")
+async def run_simulation(dataset_name: str, request: RunSimulationRequest):
+    try:
+        task = run_impact_simulation_task.delay(
+            dataset_name=dataset_name,
+            plans=request.plans,
+            target_variable=request.target_variable,
+            goal=request.goal
+        )
+        return {"job_id": task.id, "status": "Impact simulation job started."}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 def get_next_version_path(file_path: str) -> str:
     if not os.path.exists(file_path):
@@ -72,6 +95,26 @@ async def generate_plans(dataset_name: str, request: GeneratePlansRequest):
             goal=request.goal
         )
         return {"job_id": task.id, "status": "Treatment plan generation job started."}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/dataset/{dataset_name}/apply-plan")
+async def apply_plan(dataset_name: str, request: ApplyPlanRequest):
+    """
+    Executes the Python code from a selected plan and permanently updates the dataset.
+    """
+    try:
+        file_path = os.path.join(public_dir, dataset_name)
+        if not os.path.exists(file_path):
+            raise HTTPException(status_code=404, detail="Dataset not found.")
+
+        # Dispatch the task
+        task = apply_ai_plan_task.delay(
+            dataset_name=dataset_name,
+            python_code=request.python_code,
+            note=request.plan_name
+        )
+        return {"job_id": task.id, "status": "Plan application job started."}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
